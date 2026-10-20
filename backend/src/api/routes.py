@@ -124,6 +124,35 @@ def find_shortest_path(inv_id: str, start_id: str, end_id: str):
     return {"start_id": start_id, "end_id": end_id, "path": path, "length": len(path) - 1}
 
 
+@router.get("/investigations/{inv_id}/search", response_model=List[Entity])
+def search_entities(inv_id: str, q: Optional[str] = None, entity_type: Optional[str] = None, limit: int = 50):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    all_entities = repo.get_entities_for_investigation(inv_id)
+    results: List[Entity] = []
+
+    query = (q or "").lower().strip()
+    target_type = (entity_type or "").lower().strip()
+
+    for ent in all_entities:
+        # Filter by type if provided
+        if target_type and target_type != "all" and ent.type.value.lower() != target_type:
+            continue
+        # Filter by query if provided (match label, properties, or provenance source)
+        if query:
+            label_match = query in ent.label.lower()
+            prop_match = any(query in str(v).lower() for v in ent.properties.values())
+            prov_match = query in ent.provenance.source.lower()
+            if not (label_match or prop_match or prov_match):
+                continue
+        results.append(ent)
+        if len(results) >= limit:
+            break
+
+    return results
+
+
 @router.post("/investigations/{inv_id}/entities", response_model=Entity)
 def add_entity(inv_id: str, req: CreateEntityRequest):
     inv = repo.get_investigation(inv_id)
