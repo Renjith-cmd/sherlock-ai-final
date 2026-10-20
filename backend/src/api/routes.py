@@ -1,9 +1,9 @@
 """FastAPI REST routes for investigations, entities, graphs, and transforms."""
 
 from fastapi import APIRouter, HTTPException, Depends
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from pydantic import BaseModel
-from src.core.models import Investigation, Entity, Relationship, Provenance, TransformResultCandidate
+from src.core.models import Investigation, Entity, EntityType, Relationship, Provenance, TransformResultCandidate
 from src.core.validation import normalize_and_validate_entity, ValidationError
 from src.core.database import DatabaseRepository
 from src.core.transforms import registry, TransformMetadata
@@ -381,3 +381,223 @@ def merge_transform_results(inv_id: str, req: MergeCandidatesRequest):
         "created_nodes": created_nodes,
         "created_edges": created_edges
     }
+
+
+# =========================================================================
+# DOCUMENT INTELLIGENCE, ENTITY RESOLUTION & AUTO-GRAPH BUILDING
+# =========================================================================
+
+from fastapi import UploadFile, File
+from src.core.document_extractor import DocumentExtractor
+from src.core.document_intelligence import DocumentIntelligenceEngine
+from src.core.entity_resolution import EntityResolutionEngine
+
+
+@router.post("/investigations/{inv_id}/documents/upload")
+async def upload_document(inv_id: str, file: UploadFile = File(...)):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+    content = await file.read()
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large. Maximum supported size is 25MB.")
+
+    try:
+        extracted_text, metadata = DocumentExtractor.extract_text(file.filename, content)
+        doc = repo.create_document(
+            inv_id=inv_id,
+            filename=file.filename,
+            extension=metadata["extension"],
+            size_bytes=metadata["size_bytes"],
+            sha256=metadata["sha256"],
+            extracted_text=extracted_text,
+            metadata=metadata,
+            status="completed"
+        )
+        repo.log_audit(inv_id, "UPLOAD_DOCUMENT", {"document_id": doc["id"], "filename": file.filename})
+
+        # Run extraction pipeline automatically
+        intel = DocumentIntelligenceEngine.extract_all(extracted_text, doc["id"])
+
+        # Compare against existing entities across all documents for cross-doc resolution
+        existing_intel = repo.get_intelligence(inv_id)
+        all_entities = existing_intel["entities"] + intel["entities"]
+        cross_doc_matches = EntityResolutionEngine.match_entities_across_documents(all_entities)
+
+        # Save intelligence records
+        repo.save_intelligence(
+            inv_id=inv_id,
+            doc_id=doc["id"],
+            entities=intel["entities"],
+            relationships=intel["relationships"],
+            matches=cross_doc_matches
+        )
+
+        return {
+            "document": doc,
+            "extracted_entities_count": len(intel["entities"]),
+            "extracted_relationships_count": len(intel["relationships"]),
+            "cross_document_matches_count": len(cross_doc_matches),
+            "ocr_recommended": metadata.get("ocr_recommended", False)
+        }
+    except Exception as e:
+        doc = repo.create_document(
+            inv_id=inv_id,
+            filename=file.filename,
+            extension=os.path.splitext(file.filename)[1].lower() if file.filename else "",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            extracted_text="",
+            metadata={},
+            status="failed",
+            error_message=str(e)
+        )
+        raise HTTPException(status_code=422, detail=f"Document parsing error: {str(e)}")
+
+
+@router.get("/investigations/{inv_id}/documents")
+def list_investigation_documents(inv_id: str):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    return repo.list_documents(inv_id)
+
+
+@router.get("/documents/{doc_id}")
+def get_document_details(doc_id: str):
+    doc = repo.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
+@router.delete("/documents/{doc_id}")
+def delete_document_endpoint(doc_id: str):
+    success = repo.delete_document(doc_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"status": "deleted", "id": doc_id}
+
+
+@router.get("/investigations/{inv_id}/intelligence")
+def get_investigation_intelligence(inv_id: str):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    return repo.get_intelligence(inv_id)
+
+
+class BuildGraphFromIntelRequest(BaseModel):
+    selected_entities: List[Dict[str, Any]]
+    selected_relationships: List[Dict[str, Any]]
+    include_document_node: bool = True
+    document_id: Optional[str] = None
+
+
+@router.post("/investigations/{inv_id}/intelligence/build-graph")
+def build_graph_from_intelligence(inv_id: str, req: BuildGraphFromIntelRequest):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+    existing_entities = repo.get_entities_for_investigation(inv_id)
+    node_map: Dict[Tuple[str, str], Entity] = {(e.type.value if hasattr(e.type, 'value') else str(e.type), e.label.lower()): e for e in existing_entities}
+    created_nodes: List[Entity] = []
+    created_edges: List[Relationship] = []
+
+    # Optional Document Node
+    doc_node: Optional[Entity] = None
+    if req.include_document_node and req.document_id:
+        doc = repo.get_document(req.document_id)
+        if doc:
+            key = ("document", doc["filename"].lower())
+            if key in node_map:
+                doc_node = node_map[key]
+            else:
+                doc_node = Entity(
+                    investigation_id=inv_id,
+                    type=EntityType.DOCUMENT,
+                    label=doc["filename"],
+                    properties={"sha256": doc["sha256"], "size_bytes": doc["size_bytes"]},
+                    provenance=Provenance(source=f"upload:{doc['filename']}", method="file_upload", confidence=1.0)
+                )
+                doc_node = repo.create_entity(doc_node)
+                node_map[key] = doc_node
+                created_nodes.append(doc_node)
+
+    # 1. Add Accepted Entities
+    for item in req.selected_entities:
+        ent_type_str = item["type"]
+        label = item["label"]
+        key = (ent_type_str, label.lower())
+
+        if key in node_map:
+            target_node = node_map[key]
+        else:
+            try:
+                norm_label, norm_props = normalize_and_validate_entity(EntityType(ent_type_str), label, {})
+            except Exception:
+                norm_label, norm_props = label, {}
+
+            target_node = Entity(
+                investigation_id=inv_id,
+                type=EntityType(ent_type_str),
+                label=norm_label,
+                properties=norm_props,
+                provenance=Provenance(
+                    source="document_intelligence",
+                    method=item.get("method", "nlp_regex"),
+                    confidence=float(item.get("confidence", 0.9)),
+                    details={"mentions": item.get("mentions", [])}
+                )
+            )
+            target_node = repo.create_entity(target_node)
+            node_map[key] = target_node
+            created_nodes.append(target_node)
+
+        # Connect entity to document if doc node exists
+        if doc_node and target_node.id != doc_node.id:
+            rel = Relationship(
+                investigation_id=inv_id,
+                source_id=doc_node.id,
+                target_id=target_node.id,
+                type="MENTIONS",
+                properties={},
+                provenance=Provenance(source="document_extraction", method="direct", confidence=1.0)
+            )
+            created_edges.append(repo.create_relationship(rel))
+
+    # 2. Add Accepted Relationships
+    for r_item in req.selected_relationships:
+        src_key = (r_item["source_type"], r_item["source_label"].lower())
+        tgt_key = (r_item["target_type"], r_item["target_label"].lower())
+
+        src_node = node_map.get(src_key)
+        tgt_node = node_map.get(tgt_key)
+
+        if src_node and tgt_node and src_node.id != tgt_node.id:
+            rel = Relationship(
+                investigation_id=inv_id,
+                source_id=src_node.id,
+                target_id=tgt_node.id,
+                type=r_item["type"],
+                properties={"evidence": r_item.get("evidence_excerpt", "")},
+                provenance=Provenance(
+                    source="document_intelligence",
+                    method="co_occurrence_extraction",
+                    confidence=float(r_item.get("confidence", 0.85)),
+                    details={"evidence_excerpt": r_item.get("evidence_excerpt", "")}
+                )
+            )
+            created_edges.append(repo.create_relationship(rel))
+
+    repo.log_audit(inv_id, "BUILD_GRAPH_FROM_DOCUMENTS", {"nodes_added": len(created_nodes), "edges_added": len(created_edges)})
+
+    return {
+        "status": "success",
+        "nodes_added": len(created_nodes),
+        "edges_added": len(created_edges),
+        "total_nodes": len(node_map)
+    }
+

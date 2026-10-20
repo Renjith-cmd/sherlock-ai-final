@@ -27,7 +27,12 @@ import {
   Copy,
   FolderOpen,
   Activity,
-  Download
+  Download,
+  UploadCloud,
+  RefreshCw,
+  Eye,
+  Sparkles,
+  Split
 } from "lucide-react";
 
 interface Entity {
@@ -90,6 +95,118 @@ export const App: React.FC = () => {
   const [currentLayout, setCurrentLayout] = useState<string>("cose");
   const [showAnalyticsModal, setShowAnalyticsModal] = useState(false);
   const [analyticsData, setAnalyticsData] = useState<any>(null);
+
+  // Document Intelligence & Entity Resolution State
+  const [showDocModal, setShowDocModal] = useState(false);
+  const [docTab, setDocTab] = useState<"documents" | "entities" | "matches" | "relationships">("documents");
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+  const [selectedDocText, setSelectedDocText] = useState<{ filename: string; text: string } | null>(null);
+  const [intelData, setIntelData] = useState<{
+    canonical_entities: any[];
+    match_candidates: any[];
+    relationships: any[];
+  }>({ canonical_entities: [], match_candidates: [], relationships: [] });
+  const [selectedEntityIndices, setSelectedEntityIndices] = useState<number[]>([]);
+  const [selectedRelIndices, setSelectedRelIndices] = useState<number[]>([]);
+  const [includeDocNodeInGraph, setIncludeDocNodeInGraph] = useState(true);
+
+  // Load documents & intelligence for current investigation
+  const refreshDocumentsAndIntel = (invId: string) => {
+    if (!invId) return;
+    fetch(`http://127.0.0.1:8080/api/investigations/${invId}/documents`)
+      .then((r) => r.json())
+      .then((data) => setDocuments(Array.isArray(data) ? data : []))
+      .catch(console.error);
+
+    fetch(`http://127.0.0.1:8080/api/investigations/${invId}/intelligence`)
+      .then((r) => r.json())
+      .then((data) => {
+        setIntelData(data);
+        if (data.canonical_entities) {
+          // Pre-select all entities by default
+          setSelectedEntityIndices(data.canonical_entities.map((_: any, idx: number) => idx));
+        }
+        if (data.relationships) {
+          setSelectedRelIndices(data.relationships.map((_: any, idx: number) => idx));
+        }
+      })
+      .catch(console.error);
+  };
+
+  useEffect(() => {
+    if (investigationId) {
+      refreshDocumentsAndIntel(investigationId);
+    }
+  }, [investigationId]);
+
+  const handleFileUpload = (files: FileList | null) => {
+    if (!files || files.length === 0 || !investigationId) return;
+    setIsUploadingDoc(true);
+
+    const uploadPromises = Array.from(files).map((file) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      return fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/documents/upload`, {
+        method: "POST",
+        body: formData,
+      }).then((r) => r.json());
+    });
+
+    Promise.all(uploadPromises)
+      .then(() => {
+        setIsUploadingDoc(false);
+        refreshDocumentsAndIntel(investigationId);
+        // Switch to entities tab to see extracted results immediately
+        setDocTab("entities");
+      })
+      .catch((err) => {
+        console.error(err);
+        setIsUploadingDoc(false);
+      });
+  };
+
+  const handleReprocessDoc = (docId: string) => {
+    if (!investigationId) return;
+    fetch(`http://127.0.0.1:8080/api/documents/${docId}/reprocess`, { method: "POST" })
+      .then((r) => r.json())
+      .then(() => {
+        refreshDocumentsAndIntel(investigationId);
+      });
+  };
+
+  const handleDeleteDoc = (docId: string) => {
+    if (!investigationId || !window.confirm("Delete this document and all associated extractions?")) return;
+    fetch(`http://127.0.0.1:8080/api/documents/${docId}`, { method: "DELETE" })
+      .then((r) => r.json())
+      .then(() => {
+        refreshDocumentsAndIntel(investigationId);
+      });
+  };
+
+  const handleBuildGraphFromIntelligence = () => {
+    if (!investigationId) return;
+    const chosenEntities = selectedEntityIndices.map((idx) => intelData.canonical_entities[idx]);
+    const chosenRels = selectedRelIndices.map((idx) => intelData.relationships[idx]);
+
+    fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/intelligence/build-graph`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selected_entities: chosenEntities,
+        selected_relationships: chosenRels,
+        include_document_node: includeDocNodeInGraph,
+        document_id: documents.length > 0 ? documents[0].id : undefined,
+      }),
+    })
+      .then((r) => r.json())
+      .then((res) => {
+        loadGraph(investigationId);
+        setShowDocModal(false);
+        alert(`Graph populated with ${res.created_nodes_count} entities and ${res.created_edges_count} relationships!`);
+      })
+      .catch(console.error);
+  };
 
   const fetchAnalytics = () => {
     if (!investigationId) return;
@@ -609,6 +726,15 @@ export const App: React.FC = () => {
 
           <button
             className="tool-btn"
+            style={{ background: "#1e293b", border: "1px solid #3b82f6", color: "#38bdf8" }}
+            title="Document Intelligence & Entity Resolution"
+            onClick={() => setShowDocModal(true)}
+          >
+            <UploadCloud size={13} color="#38bdf8" /> Documents ({documents.length})
+          </button>
+
+          <button
+            className="tool-btn"
             style={{ background: "#1e293b", border: "1px solid #2a3749" }}
             onClick={() => setShowCaseModal(true)}
           >
@@ -715,6 +841,526 @@ export const App: React.FC = () => {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Document Intelligence & Entity Resolution Modal */}
+      {showDocModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,0,0,0.8)",
+            zIndex: 100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            style={{
+              background: "#161f2d",
+              border: "1px solid #2a3749",
+              borderRadius: "8px",
+              width: "900px",
+              maxHeight: "85vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 16px 40px rgba(0,0,0,0.9)",
+            }}
+          >
+            {/* Modal Header */}
+            <div style={{ padding: "16px", borderBottom: "1px solid #2a3749", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <Sparkles size={18} color="#38bdf8" />
+                <span style={{ fontWeight: 700, fontSize: "16px" }}>Document Intelligence & Entity Resolution</span>
+              </div>
+              <button
+                onClick={() => setShowDocModal(false)}
+                style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "16px" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Navigation Tabs */}
+            <div style={{ display: "flex", borderBottom: "1px solid #2a3749", background: "#0f141c", padding: "0 16px" }}>
+              <button
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: docTab === "documents" ? "2px solid #38bdf8" : "2px solid transparent",
+                  color: docTab === "documents" ? "#38bdf8" : "#94a3b8",
+                  padding: "10px 16px",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  fontSize: "13px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+                onClick={() => setDocTab("documents")}
+              >
+                <UploadCloud size={14} /> Documents ({documents.length})
+              </button>
+              <button
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: docTab === "entities" ? "2px solid #38bdf8" : "2px solid transparent",
+                  color: docTab === "entities" ? "#38bdf8" : "#94a3b8",
+                  padding: "10px 16px",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  fontSize: "13px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+                onClick={() => setDocTab("entities")}
+              >
+                <User size={14} /> Extracted Entities ({intelData.canonical_entities?.length || 0})
+              </button>
+              <button
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: docTab === "matches" ? "2px solid #38bdf8" : "2px solid transparent",
+                  color: docTab === "matches" ? "#38bdf8" : "#94a3b8",
+                  padding: "10px 16px",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  fontSize: "13px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+                onClick={() => setDocTab("matches")}
+              >
+                <Split size={14} /> Cross-Doc Matches ({intelData.match_candidates?.length || 0})
+              </button>
+              <button
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: docTab === "relationships" ? "2px solid #38bdf8" : "2px solid transparent",
+                  color: docTab === "relationships" ? "#38bdf8" : "#94a3b8",
+                  padding: "10px 16px",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  fontSize: "13px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+                onClick={() => setDocTab("relationships")}
+              >
+                <LinkIcon size={14} /> Relationships ({intelData.relationships?.length || 0})
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div style={{ padding: "16px", overflowY: "auto", flex: 1, maxHeight: "calc(85vh - 130px)" }}>
+              {/* TAB 1: Documents Upload & Management */}
+              {docTab === "documents" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                  {/* Dropzone */}
+                  <div
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      handleFileUpload(e.dataTransfer.files);
+                    }}
+                    style={{
+                      border: "2px dashed #3b82f6",
+                      borderRadius: "8px",
+                      padding: "24px",
+                      textAlign: "center",
+                      background: "rgba(59, 130, 246, 0.05)",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => {
+                      const input = document.createElement("input");
+                      input.type = "file";
+                      input.multiple = true;
+                      input.onchange = (e: any) => handleFileUpload(e.target.files);
+                      input.click();
+                    }}
+                  >
+                    <UploadCloud size={32} color="#38bdf8" style={{ margin: "0 auto 8px" }} />
+                    <div style={{ fontWeight: 600, fontSize: "14px" }}>
+                      {isUploadingDoc ? "Processing & Extracting Entities..." : "Click or Drag & Drop Documents Here"}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "4px" }}>
+                      Supported formats: PDF, DOCX, TXT, MD, CSV, JSON (Up to 25MB)
+                    </div>
+                  </div>
+
+                  {/* Documents List */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div style={{ fontSize: "12px", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" }}>
+                      Uploaded Documents ({documents.length})
+                    </div>
+                    {documents.length === 0 ? (
+                      <div style={{ fontSize: "13px", color: "#64748b", padding: "12px", textAlign: "center" }}>
+                        No documents uploaded yet for this investigation.
+                      </div>
+                    ) : (
+                      documents.map((d) => (
+                        <div
+                          key={d.id}
+                          style={{
+                            background: "#0f172a",
+                            border: "1px solid #2a3749",
+                            borderRadius: "6px",
+                            padding: "10px 14px",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: "13px", color: "#f1f5f9" }}>
+                              {d.filename}{" "}
+                              <span style={{ fontSize: "10px", color: "#94a3b8", fontWeight: "normal" }}>
+                                ({(d.size_bytes / 1024).toFixed(1)} KB)
+                              </span>
+                            </div>
+                            <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                              Status: <span style={{ color: d.status === "completed" ? "#10b981" : "#ef4444" }}>{d.status}</span> |
+                              Type: {d.file_type} | Uploaded: {new Date(d.created_at).toLocaleString()}
+                              {d.error_message && <span style={{ color: "#ef4444", marginLeft: "6px" }}>({d.error_message})</span>}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: "6px" }}>
+                            <button
+                              className="tool-btn"
+                              style={{ background: "#1e293b", border: "1px solid #334155" }}
+                              title="View Extracted Text"
+                              onClick={() => {
+                                fetch(`http://127.0.0.1:8080/api/documents/${d.id}`)
+                                  .then((r) => r.json())
+                                  .then((data) => setSelectedDocText({ filename: d.filename, text: data.extracted_text || "(No text)" }));
+                              }}
+                            >
+                              <Eye size={13} color="#38bdf8" /> Text
+                            </button>
+                            <button
+                              className="tool-btn"
+                              style={{ background: "#1e293b", border: "1px solid #334155" }}
+                              title="Reprocess Document"
+                              onClick={() => handleReprocessDoc(d.id)}
+                            >
+                              <RefreshCw size={13} color="#f59e0b" /> Retry
+                            </button>
+                            <button
+                              className="tool-btn"
+                              style={{ background: "#7f1d1d", color: "#fca5a5" }}
+                              title="Delete Document"
+                              onClick={() => handleDeleteDoc(d.id)}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Extracted Text Viewer Modal / Box */}
+                  {selectedDocText && (
+                    <div
+                      style={{
+                        background: "#090d14",
+                        border: "1px solid #3b82f6",
+                        borderRadius: "6px",
+                        padding: "12px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "8px",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontWeight: 600, fontSize: "12px", color: "#38bdf8" }}>
+                          Extracted Text: {selectedDocText.filename}
+                        </span>
+                        <button
+                          onClick={() => setSelectedDocText(null)}
+                          style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer" }}
+                        >
+                          ✕ Close
+                        </button>
+                      </div>
+                      <pre
+                        style={{
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-all",
+                          fontSize: "11px",
+                          fontFamily: "monospace",
+                          color: "#cbd5e1",
+                          maxHeight: "180px",
+                          overflowY: "auto",
+                          background: "#0f172a",
+                          padding: "8px",
+                          borderRadius: "4px",
+                        }}
+                      >
+                        {selectedDocText.text}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 2: Extracted Entities Review */}
+              {docTab === "entities" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                      Select entities to construct or expand the investigation graph.
+                    </div>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button
+                        className="tool-btn"
+                        style={{ background: "#1e293b", border: "1px solid #2a3749", fontSize: "11px" }}
+                        onClick={() => setSelectedEntityIndices(intelData.canonical_entities.map((_: any, idx: number) => idx))}
+                      >
+                        Select All
+                      </button>
+                      <button
+                        className="tool-btn"
+                        style={{ background: "#1e293b", border: "1px solid #2a3749", fontSize: "11px" }}
+                        onClick={() => setSelectedEntityIndices([])}
+                      >
+                        Deselect All
+                      </button>
+                    </div>
+                  </div>
+
+                  {intelData.canonical_entities.length === 0 ? (
+                    <div style={{ fontSize: "13px", color: "#64748b", padding: "20px", textAlign: "center" }}>
+                      No entities extracted yet. Upload a document in the Documents tab to extract indicators.
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {intelData.canonical_entities.map((ent: any, idx: number) => {
+                        const isSelected = selectedEntityIndices.includes(idx);
+                        return (
+                          <div
+                            key={idx}
+                            style={{
+                              background: isSelected ? "#1e293b" : "#0f172a",
+                              border: `1px solid ${isSelected ? "#3b82f6" : "#2a3749"}`,
+                              borderRadius: "6px",
+                              padding: "8px 12px",
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedEntityIndices([...selectedEntityIndices, idx]);
+                                  } else {
+                                    setSelectedEntityIndices(selectedEntityIndices.filter((i) => i !== idx));
+                                  }
+                                }}
+                              />
+                              <div>
+                                <span style={{ fontWeight: 600, fontSize: "13px" }}>{ent.label}</span>
+                                <span
+                                  style={{
+                                    fontSize: "10px",
+                                    marginLeft: "8px",
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    background: "#334155",
+                                    color: "#cbd5e1",
+                                    textTransform: "uppercase",
+                                  }}
+                                >
+                                  {ent.type}
+                                </span>
+                                <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
+                                  Mentions: {ent.mention_count} | Confidence: {ent.confidence} | Method: {ent.method}
+                                </div>
+                              </div>
+                            </div>
+                            <span style={{ fontSize: "10px", color: "#10b981", background: "rgba(16, 185, 129, 0.1)", padding: "2px 6px", borderRadius: "4px" }}>
+                              Verified Excerpt
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 3: Cross-Document Matches */}
+              {docTab === "matches" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                    Potential entity duplicates detected across separate documents using token overlap and Gestalt pattern matching.
+                  </div>
+
+                  {intelData.match_candidates.length === 0 ? (
+                    <div style={{ fontSize: "13px", color: "#64748b", padding: "20px", textAlign: "center" }}>
+                      No cross-document match candidates detected. Upload two or more documents with shared entities to view candidates.
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {intelData.match_candidates.map((mc: any, idx: number) => (
+                        <div
+                          key={idx}
+                          style={{
+                            background: "#0f172a",
+                            border: "1px solid #2a3749",
+                            borderRadius: "6px",
+                            padding: "10px 14px",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "6px",
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <div>
+                              <span style={{ fontWeight: 700, fontSize: "13px", color: "#38bdf8" }}>{mc.entity1_label}</span>
+                              <span style={{ margin: "0 8px", color: "#94a3b8" }}>⟷</span>
+                              <span style={{ fontWeight: 700, fontSize: "13px", color: "#38bdf8" }}>{mc.entity2_label}</span>
+                              <span style={{ fontSize: "11px", color: "#94a3b8", marginLeft: "6px" }}>({mc.type})</span>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  background: mc.score >= 0.85 ? "#064e3b" : "#78350f",
+                                  color: mc.score >= 0.85 ? "#34d399" : "#fbbf24",
+                                  padding: "2px 8px",
+                                  borderRadius: "4px",
+                                }}
+                              >
+                                {mc.suggested_action.replace("_", " ").toUpperCase()} ({(mc.score * 100).toFixed(0)}%)
+                              </span>
+                            </div>
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#cbd5e1" }}>
+                            <b>Evidence:</b> {mc.evidence}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 4: Relationships */}
+              {docTab === "relationships" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                    Evidence-backed co-occurrence relationships discovered within sentences and paragraphs.
+                  </div>
+
+                  {intelData.relationships.length === 0 ? (
+                    <div style={{ fontSize: "13px", color: "#64748b", padding: "20px", textAlign: "center" }}>
+                      No relationships extracted yet.
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {intelData.relationships.map((rel: any, idx: number) => {
+                        const isSelected = selectedRelIndices.includes(idx);
+                        return (
+                          <div
+                            key={idx}
+                            style={{
+                              background: isSelected ? "#1e293b" : "#0f172a",
+                              border: `1px solid ${isSelected ? "#3b82f6" : "#2a3749"}`,
+                              borderRadius: "6px",
+                              padding: "8px 12px",
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedRelIndices([...selectedRelIndices, idx]);
+                                  } else {
+                                    setSelectedRelIndices(selectedRelIndices.filter((i) => i !== idx));
+                                  }
+                                }}
+                              />
+                              <div>
+                                <span style={{ fontWeight: 600, fontSize: "13px" }}>{rel.source_label}</span>
+                                <span style={{ margin: "0 6px", color: "#38bdf8", fontSize: "11px" }}>[{rel.relationship_type}]</span>
+                                <span style={{ fontWeight: 600, fontSize: "13px" }}>{rel.target_label}</span>
+                                <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
+                                  Excerpt: "{rel.evidence_excerpt}"
+                                </div>
+                              </div>
+                            </div>
+                            <span style={{ fontSize: "10px", color: "#f59e0b", background: "rgba(245, 158, 11, 0.1)", padding: "2px 6px", borderRadius: "4px" }}>
+                              Confidence: {rel.confidence}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div
+              style={{
+                padding: "12px 16px",
+                borderTop: "1px solid #2a3749",
+                background: "#0f141c",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#cbd5e1", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={includeDocNodeInGraph}
+                  onChange={(e) => setIncludeDocNodeInGraph(e.target.checked)}
+                />
+                Include Source Document node in Graph
+              </label>
+
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  className="tool-btn"
+                  style={{ background: "#334155" }}
+                  onClick={() => setShowDocModal(false)}
+                >
+                  Close
+                </button>
+                <button
+                  className="tool-btn"
+                  style={{ background: "#2563eb", color: "#fff", fontWeight: 600 }}
+                  onClick={handleBuildGraphFromIntelligence}
+                >
+                  <Sparkles size={14} /> Add Selected to Graph ({selectedEntityIndices.length} entities, {selectedRelIndices.length} edges)
+                </button>
+              </div>
             </div>
           </div>
         </div>

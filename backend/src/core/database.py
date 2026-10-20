@@ -86,6 +86,36 @@ def init_db(db_file: Optional[Path] = None):
                 FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE CASCADE
             );
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                investigation_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                extension TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                extracted_text TEXT NOT NULL DEFAULT '',
+                metadata TEXT NOT NULL DEFAULT '{}',
+                processing_status TEXT NOT NULL DEFAULT 'uploaded',
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE CASCADE
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS extracted_intelligence (
+                id TEXT PRIMARY KEY,
+                investigation_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                extracted_entities TEXT NOT NULL DEFAULT '[]',
+                extracted_relationships TEXT NOT NULL DEFAULT '[]',
+                cross_document_matches TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'completed',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE CASCADE,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+            );
+        """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_inv ON entities(investigation_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_inv ON relationships(investigation_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_source ON relationships(source_id);")
@@ -93,6 +123,8 @@ def init_db(db_file: Optional[Path] = None):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_inv ON evidence(investigation_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_ent ON evidence(entity_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_inv ON audit_logs(investigation_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_inv ON documents(investigation_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_intel_inv ON extracted_intelligence(investigation_id);")
     conn.close()
 
 
@@ -419,4 +451,114 @@ class DatabaseRepository:
         rows = cur.fetchall()
         conn.close()
         return [{"id": r["id"], "investigation_id": r["investigation_id"], "action": r["action"], "details": json.loads(r["details"]), "timestamp": r["timestamp"]} for r in rows]
+
+    # --- Document & Intelligence Operations ---
+
+    def create_document(self, inv_id: str, filename: str, extension: str, size_bytes: int,
+                        sha256: str, extracted_text: str = "", metadata: Dict[str, Any] = None,
+                        status: str = "completed", error_message: str = None) -> Dict[str, Any]:
+        import uuid
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        doc_id = str(uuid.uuid4())
+        meta_json = json.dumps(metadata or {})
+        conn = get_connection(self.db_file)
+        with conn:
+            conn.execute(
+                "INSERT INTO documents (id, investigation_id, filename, extension, size_bytes, sha256, extracted_text, metadata, processing_status, error_message, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (doc_id, inv_id, filename, extension, size_bytes, sha256, extracted_text, meta_json, status, error_message, now)
+            )
+        conn.close()
+        return {
+            "id": doc_id,
+            "investigation_id": inv_id,
+            "filename": filename,
+            "extension": extension,
+            "size_bytes": size_bytes,
+            "sha256": sha256,
+            "extracted_text": extracted_text,
+            "metadata": metadata or {},
+            "processing_status": status,
+            "error_message": error_message,
+            "created_at": now
+        }
+
+    def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        conn = get_connection(self.db_file)
+        cur = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,))
+        r = cur.fetchone()
+        conn.close()
+        if not r:
+            return None
+        d = dict(r)
+        d["metadata"] = json.loads(d["metadata"])
+        return d
+
+    def list_documents(self, inv_id: str) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_file)
+        cur = conn.execute("SELECT id, investigation_id, filename, extension, size_bytes, sha256, metadata, processing_status, error_message, created_at FROM documents WHERE investigation_id = ? ORDER BY created_at DESC", (inv_id,))
+        rows = cur.fetchall()
+        conn.close()
+        res = []
+        for r in rows:
+            d = dict(r)
+            d["metadata"] = json.loads(d["metadata"])
+            res.append(d)
+        return res
+
+    def delete_document(self, doc_id: str) -> bool:
+        conn = get_connection(self.db_file)
+        with conn:
+            cur = conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+            deleted = cur.rowcount > 0
+        conn.close()
+        return deleted
+
+    def save_intelligence(self, inv_id: str, doc_id: str, entities: List[Dict[str, Any]],
+                          relationships: List[Dict[str, Any]], matches: List[Dict[str, Any]]) -> Dict[str, Any]:
+        import uuid
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        intel_id = str(uuid.uuid4())
+        conn = get_connection(self.db_file)
+        with conn:
+            conn.execute(
+                "INSERT INTO extracted_intelligence (id, investigation_id, document_id, extracted_entities, extracted_relationships, cross_document_matches, status, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (intel_id, inv_id, doc_id, json.dumps(entities), json.dumps(relationships), json.dumps(matches), "completed", now)
+            )
+        conn.close()
+        return {
+            "id": intel_id,
+            "investigation_id": inv_id,
+            "document_id": doc_id,
+            "extracted_entities": entities,
+            "extracted_relationships": relationships,
+            "cross_document_matches": matches,
+            "updated_at": now
+        }
+
+    def get_intelligence(self, inv_id: str) -> Dict[str, Any]:
+        conn = get_connection(self.db_file)
+        cur = conn.execute("SELECT * FROM extracted_intelligence WHERE investigation_id = ? ORDER BY updated_at DESC", (inv_id,))
+        rows = cur.fetchall()
+        conn.close()
+        all_entities: List[Dict[str, Any]] = []
+        all_relationships: List[Dict[str, Any]] = []
+        all_matches: List[Dict[str, Any]] = []
+
+        for r in rows:
+            ents = json.loads(r["extracted_entities"])
+            rels = json.loads(r["extracted_relationships"])
+            mats = json.loads(r["cross_document_matches"])
+            all_entities.extend(ents)
+            all_relationships.extend(rels)
+            all_matches.extend(mats)
+
+        return {
+            "entities": all_entities,
+            "relationships": all_relationships,
+            "matches": all_matches
+        }
 
