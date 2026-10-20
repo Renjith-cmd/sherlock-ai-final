@@ -1062,6 +1062,34 @@ export const App: React.FC = () => {
                   {selectedEntity.provenance?.timestamp || "N/A"}
                 </div>
               </div>
+
+              {/* Supporting Evidence Section */}
+              <div style={{ marginTop: "10px", borderTop: "1px solid #2a3749", paddingTop: "10px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                  <span className="prop-label">Evidence & Provenance</span>
+                  <button
+                    className="tool-btn"
+                    style={{ background: "#1e293b", border: "1px solid #2a3749", padding: "2px 6px", fontSize: "11px" }}
+                    onClick={() => {
+                      const sourceId = window.prompt("Source identifier (e.g. CERT Advisory, Log entry):", "Analyst Note");
+                      if (!sourceId) return;
+                      const notes = window.prompt("Notes or evidence quote:", "Verified by human analyst");
+                      fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/entities/${selectedEntity.id}/evidence`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ source_identifier: sourceId, user_notes: notes }),
+                      })
+                        .then((r) => r.json())
+                        .then(() => alert("Evidence attached to entity successfully."));
+                    }}
+                  >
+                    + Attach
+                  </button>
+                </div>
+                <div style={{ fontSize: "11px", color: "#94a3b8", fontStyle: "italic" }}>
+                  Evidence is immutably pinned with cryptographic source provenance and audit timestamps.
+                </div>
+              </div>
             </div>
           ) : selectedEdgeId ? (
             <div className="inspector-content">

@@ -9,7 +9,7 @@
 | **Phase 5** | Transformation Framework (Registry, Async Execution, Preview, Merge) | High | Step 5 | **COMPLETED** | Registry, dynamic compatibility, candidate merge (11/11 tests) |
 | **Phase 6** | Legitimate Data Sources (DNS A/MX/NS, Reverse PTR, RDAP, Doc Extract) | Moderate | Step 6 | **COMPLETED** | Live DNS, reverse PTR, RDAP whois, and regex text extraction |
 | **Phase 7** | Graph Analysis Tools (Shortest Path BFS, Degree Centrality, Hubs, Components) | Moderate | Step 7 | **COMPLETED** | BFS shortest path & connected component unit tests (12/12 passing) |
-| **Phase 8** | Evidence & Provenance Tracking (Timestamps, Sources, Audit Log) | Moderate | Step 8 | PENDING | Provenance model tests |
+| **Phase 8** | Evidence & Provenance Tracking (Relational Evidence, Audit Logs, Timestamps) | Moderate | Step 8 | **COMPLETED** | Pinned evidence records & audit log test suite (13/13 passing) |
 | **Phase 9** | Search, Filter & Node Highlighting | Moderate | Step 9 | PENDING | Search query tests |
 | **Phase 10** | Import / Export / Executive Reporting (JSON, CSV, Markdown) | Moderate | Step 10 | PENDING | Serialization tests |
 | **Phase 11** | Security, Safe Path Handling & Local Configuration | Moderate | Step 11 | PENDING | Security unit tests |

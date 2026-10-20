@@ -55,16 +55,44 @@ def init_db(db_file: Optional[Path] = None):
                 type TEXT NOT NULL DEFAULT 'ASSOCIATED_WITH',
                 properties TEXT NOT NULL DEFAULT '{}',
                 provenance TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
                 FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE CASCADE,
                 FOREIGN KEY (source_id) REFERENCES entities(id) ON DELETE CASCADE,
                 FOREIGN KEY (target_id) REFERENCES entities(id) ON DELETE CASCADE
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS evidence (
+                id TEXT PRIMARY KEY,
+                investigation_id TEXT NOT NULL,
+                entity_id TEXT,
+                relationship_id TEXT,
+                source_url TEXT,
+                source_identifier TEXT NOT NULL,
+                content_hash TEXT,
+                user_notes TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE CASCADE,
+                FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+                FOREIGN KEY (relationship_id) REFERENCES relationships(id) ON DELETE CASCADE
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id TEXT PRIMARY KEY,
+                investigation_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '{}',
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE CASCADE
             );
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_inv ON entities(investigation_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_inv ON relationships(investigation_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_source ON relationships(source_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_target ON relationships(target_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_inv ON evidence(investigation_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_ent ON evidence(entity_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_inv ON audit_logs(investigation_id);")
     conn.close()
 
 
@@ -338,3 +366,57 @@ class DatabaseRepository:
             deleted = cur.rowcount > 0
         conn.close()
         return deleted
+
+    def create_evidence(self, inv_id: str, source_identifier: str, entity_id: Optional[str] = None,
+                        relationship_id: Optional[str] = None, source_url: Optional[str] = None,
+                        content_hash: Optional[str] = None, user_notes: Optional[str] = None) -> Dict[str, Any]:
+        import uuid
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        ev_id = str(uuid.uuid4())
+        conn = get_connection(self.db_file)
+        with conn:
+            conn.execute(
+                "INSERT INTO evidence (id, investigation_id, entity_id, relationship_id, source_url, source_identifier, content_hash, user_notes, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ev_id, inv_id, entity_id, relationship_id, source_url, source_identifier, content_hash, user_notes, now)
+            )
+        conn.close()
+        return {
+            "id": ev_id,
+            "investigation_id": inv_id,
+            "entity_id": entity_id,
+            "relationship_id": relationship_id,
+            "source_url": source_url,
+            "source_identifier": source_identifier,
+            "content_hash": content_hash,
+            "user_notes": user_notes,
+            "created_at": now
+        }
+
+    def get_evidence_for_entity(self, entity_id: str) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_file)
+        cur = conn.execute("SELECT * FROM evidence WHERE entity_id = ? ORDER BY created_at DESC", (entity_id,))
+        rows = cur.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def log_audit(self, inv_id: str, action: str, details: Dict[str, Any]) -> None:
+        import uuid
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_connection(self.db_file)
+        with conn:
+            conn.execute(
+                "INSERT INTO audit_logs (id, investigation_id, action, details, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), inv_id, action, json.dumps(details), now)
+            )
+        conn.close()
+
+    def get_audit_logs(self, inv_id: str) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_file)
+        cur = conn.execute("SELECT * FROM audit_logs WHERE investigation_id = ? ORDER BY timestamp DESC", (inv_id,))
+        rows = cur.fetchall()
+        conn.close()
+        return [{"id": r["id"], "investigation_id": r["investigation_id"], "action": r["action"], "details": json.loads(r["details"]), "timestamp": r["timestamp"]} for r in rows]
+

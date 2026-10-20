@@ -146,6 +146,40 @@ def add_entity(inv_id: str, req: CreateEntityRequest):
     return repo.create_entity(entity)
 
 
+class CreateEvidenceRequest(BaseModel):
+    source_identifier: str
+    source_url: Optional[str] = None
+    content_hash: Optional[str] = None
+    user_notes: Optional[str] = None
+
+
+@router.post("/investigations/{inv_id}/entities/{entity_id}/evidence")
+def add_entity_evidence(inv_id: str, entity_id: str, req: CreateEvidenceRequest):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    ev = repo.create_evidence(
+        inv_id=inv_id,
+        entity_id=entity_id,
+        source_identifier=req.source_identifier,
+        source_url=req.source_url,
+        content_hash=req.content_hash,
+        user_notes=req.user_notes
+    )
+    repo.log_audit(inv_id, "ATTACH_EVIDENCE", {"entity_id": entity_id, "evidence_id": ev["id"]})
+    return ev
+
+
+@router.get("/entities/{entity_id}/evidence")
+def list_entity_evidence(entity_id: str):
+    return repo.get_evidence_for_entity(entity_id)
+
+
+@router.get("/investigations/{inv_id}/audit-logs")
+def get_audit_trail(inv_id: str):
+    return repo.get_audit_logs(inv_id)
+
+
 @router.patch("/entities/{entity_id}", response_model=Entity)
 def update_entity_endpoint(entity_id: str, payload: Dict[str, Any]):
     label = payload.get("label")
