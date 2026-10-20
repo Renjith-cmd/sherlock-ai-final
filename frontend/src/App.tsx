@@ -10,7 +10,6 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
-  Database,
   CheckCircle,
   XCircle,
   Compass,
@@ -23,7 +22,10 @@ import {
   Building,
   FileText,
   Hash,
-  ArrowRight
+  ArrowRight,
+  Plus,
+  Copy,
+  FolderOpen
 } from "lucide-react";
 
 interface Entity {
@@ -62,9 +64,19 @@ interface Candidate {
   properties: Record<string, any>;
 }
 
+interface Investigation {
+  id: string;
+  title: string;
+  description?: string;
+  tags?: string[];
+  created_at: string;
+  updated_at: string;
+}
+
 export const App: React.FC = () => {
   const [investigationId, setInvestigationId] = useState<string>("");
-  const [investigations, setInvestigations] = useState<any[]>([]);
+  const [investigations, setInvestigations] = useState<Investigation[]>([]);
+  const [showCaseModal, setShowCaseModal] = useState(false);
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [selectedNodeCount, setSelectedNodeCount] = useState<number>(0);
@@ -82,33 +94,28 @@ export const App: React.FC = () => {
     entity: Entity | null;
   } | null>(null);
 
-  // Link mode state (creating an edge between two nodes)
+  // Link mode state
   const [linkSourceNodeId, setLinkSourceNodeId] = useState<string | null>(null);
 
   const cyRef = useRef<HTMLDivElement>(null);
   const cyInstance = useRef<Core | null>(null);
 
-  // Fetch investigations
-  useEffect(() => {
+  // Load investigations list
+  const refreshInvestigations = (selectId?: string) => {
     fetch("http://127.0.0.1:8080/api/investigations")
       .then((res) => res.json())
       .then((data) => {
         setInvestigations(data);
-        if (data.length > 0) {
+        if (selectId) {
+          setInvestigationId(selectId);
+        } else if (data.length > 0 && !investigationId) {
           setInvestigationId(data[0].id);
-        } else {
-          fetch("http://127.0.0.1:8080/api/investigations", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title: "Operation Sovereign Link", description: "Primary OSINT workbench" }),
-          })
-            .then((r) => r.json())
-            .then((newInv) => {
-              setInvestigations([newInv]);
-              setInvestigationId(newInv.id);
-            });
         }
       });
+  };
+
+  useEffect(() => {
+    refreshInvestigations();
   }, []);
 
   // Fetch transforms
@@ -251,13 +258,12 @@ export const App: React.FC = () => {
       const node = evt.target;
       const renderedPos = node.renderedPosition();
       setContextMenu({
-        x: renderedPos.x + 280, // Offset by sidebar
-        y: renderedPos.y + 60,  // Offset by header
+        x: renderedPos.x + 280,
+        y: renderedPos.y + 60,
         entity: node.data("entity"),
       });
     });
 
-    // Dismiss context menu on canvas tap
     cy.on("tap", (evt: EventObject) => {
       if (evt.target === cy) {
         setContextMenu(null);
@@ -355,6 +361,52 @@ export const App: React.FC = () => {
             data: { id: newEntity.id, label: newEntity.label, type: newEntity.type, entity: newEntity },
           });
           applyLayout(currentLayout);
+        }
+      });
+  };
+
+  // Investigation Management Actions
+  const handleCreateInvestigation = () => {
+    const title = window.prompt("New Investigation Title:", "Operation New Horizon");
+    if (!title) return;
+    fetch("http://127.0.0.1:8080/api/investigations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, description: "Active OSINT Workspace" }),
+    })
+      .then((r) => r.json())
+      .then((newInv) => {
+        refreshInvestigations(newInv.id);
+        setShowCaseModal(false);
+      });
+  };
+
+  const handleDuplicateInvestigation = (idToDup: string) => {
+    const target = investigations.find((i) => i.id === idToDup);
+    const newTitle = window.prompt("Duplicate Investigation As:", target ? `${target.title} (Clone)` : "Investigation Copy");
+    if (!newTitle) return;
+
+    fetch(`http://127.0.0.1:8080/api/investigations/${idToDup}/duplicate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: newTitle }),
+    })
+      .then((r) => r.json())
+      .then((cloned) => {
+        refreshInvestigations(cloned.id);
+        setShowCaseModal(false);
+      });
+  };
+
+  const handleDeleteInvestigation = (idToDel: string) => {
+    if (!window.confirm("Are you sure you want to permanently delete this investigation and its entire graph?")) return;
+    fetch(`http://127.0.0.1:8080/api/investigations/${idToDel}`, { method: "DELETE" })
+      .then((r) => r.json())
+      .then(() => {
+        const remaining = investigations.filter((i) => i.id !== idToDel);
+        setInvestigations(remaining);
+        if (remaining.length > 0) {
+          setInvestigationId(remaining[0].id);
         }
       });
   };
@@ -473,6 +525,8 @@ export const App: React.FC = () => {
       });
   };
 
+  const activeInv = investigations.find((i) => i.id === investigationId);
+
   return (
     <>
       <header className="app-header">
@@ -511,27 +565,120 @@ export const App: React.FC = () => {
           </div>
         </div>
 
+        {/* Investigation Selector & Modal Launcher */}
         <div className="top-actions">
-          <Database size={16} color="#94a3b8" />
-          <select
-            style={{
-              background: "#1e293b",
-              color: "#f1f5f9",
-              border: "1px solid #2a3749",
-              padding: "4px 8px",
-              borderRadius: "4px",
-            }}
-            value={investigationId}
-            onChange={(e) => setInvestigationId(e.target.value)}
+          <button
+            className="tool-btn"
+            style={{ background: "#1e293b", border: "1px solid #2a3749" }}
+            onClick={() => setShowCaseModal(true)}
           >
-            {investigations.map((inv) => (
-              <option key={inv.id} value={inv.id}>
-                {inv.title}
-              </option>
-            ))}
-          </select>
+            <FolderOpen size={14} color="#38bdf8" /> Cases ({investigations.length})
+          </button>
+          <button
+            className="tool-btn"
+            style={{ background: "#059669", color: "#fff" }}
+            onClick={handleCreateInvestigation}
+          >
+            <Plus size={14} /> New Case
+          </button>
         </div>
       </header>
+
+      {/* Case Management Modal */}
+      {showCaseModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,0,0,0.75)",
+            zIndex: 100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            style={{
+              background: "#161f2d",
+              border: "1px solid #2a3749",
+              borderRadius: "8px",
+              width: "600px",
+              maxHeight: "80vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 12px 32px rgba(0,0,0,0.8)",
+            }}
+          >
+            <div style={{ padding: "16px", borderBottom: "1px solid #2a3749", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontWeight: 700, fontSize: "15px" }}>Investigation Case Management</div>
+              <button
+                onClick={() => setShowCaseModal(false)}
+                style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "16px" }}
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{ padding: "16px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "10px" }}>
+              {investigations.map((inv) => (
+                <div
+                  key={inv.id}
+                  style={{
+                    background: inv.id === investigationId ? "#1e293b" : "#0f172a",
+                    border: `1px solid ${inv.id === investigationId ? "#3b82f6" : "#2a3749"}`,
+                    padding: "12px",
+                    borderRadius: "6px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: "14px", color: inv.id === investigationId ? "#38bdf8" : "#f1f5f9" }}>
+                      {inv.title} {inv.id === investigationId && <span style={{ fontSize: "10px", color: "#10b981", background: "#064e3b", padding: "2px 6px", borderRadius: "4px" }}>ACTIVE</span>}
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
+                      Created: {new Date(inv.created_at).toLocaleString()} | ID: {inv.id.slice(0, 8)}...
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    {inv.id !== investigationId && (
+                      <button
+                        className="tool-btn"
+                        style={{ background: "#2563eb", color: "#fff" }}
+                        onClick={() => {
+                          setInvestigationId(inv.id);
+                          setShowCaseModal(false);
+                        }}
+                      >
+                        Open
+                      </button>
+                    )}
+                    <button
+                      className="tool-btn"
+                      style={{ background: "#334155" }}
+                      title="Duplicate Investigation"
+                      onClick={() => handleDuplicateInvestigation(inv.id)}
+                    >
+                      <Copy size={13} />
+                    </button>
+                    <button
+                      className="tool-btn"
+                      style={{ background: "#7f1d1d", color: "#fca5a5" }}
+                      title="Delete Investigation"
+                      onClick={() => handleDeleteInvestigation(inv.id)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Link creation banner */}
       {linkSourceNodeId && (
@@ -549,6 +696,16 @@ export const App: React.FC = () => {
       <div className="workbench-body">
         {/* Left Palette */}
         <aside className="nav-sidebar">
+          <div className="sidebar-section">
+            <div className="sidebar-title">Case Information</div>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#38bdf8", marginBottom: "4px" }}>
+              {activeInv?.title || "Active Case"}
+            </div>
+            <div style={{ fontSize: "11px", color: "#94a3b8" }}>
+              {activeInv?.description || "Graph Link Analysis"}
+            </div>
+          </div>
+
           <div className="sidebar-section">
             <div className="sidebar-title">Add Entity to Graph</div>
             <div className="palette-grid">

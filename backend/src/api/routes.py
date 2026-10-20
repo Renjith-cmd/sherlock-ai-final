@@ -1,7 +1,8 @@
 """FastAPI REST routes for investigations, entities, graphs, and transforms."""
 
 from fastapi import APIRouter, HTTPException, Depends
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
 from src.core.models import Investigation, Entity, Relationship, Provenance, TransformResultCandidate
 from src.core.database import DatabaseRepository
 from src.core.transforms import registry, TransformMetadata
@@ -45,6 +46,38 @@ def get_investigation(inv_id: str):
     if not inv:
         raise HTTPException(status_code=404, detail="Investigation not found")
     return inv
+
+
+@router.patch("/investigations/{inv_id}", response_model=Investigation)
+def update_investigation(inv_id: str, payload: Dict[str, Any]):
+    title = payload.get("title")
+    description = payload.get("description")
+    tags = payload.get("tags")
+    inv = repo.update_investigation(inv_id, title=title, description=description, tags=tags)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    return inv
+
+
+@router.delete("/investigations/{inv_id}")
+def delete_investigation(inv_id: str):
+    success = repo.delete_investigation(inv_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    return {"status": "deleted", "id": inv_id}
+
+
+class DuplicateRequest(BaseModel):
+    title: Optional[str] = None
+
+
+@router.post("/investigations/{inv_id}/duplicate", response_model=Investigation)
+def duplicate_investigation(inv_id: str, payload: Optional[DuplicateRequest] = None):
+    new_title = payload.title if payload else None
+    new_inv = repo.duplicate_investigation(inv_id, new_title=new_title)
+    if not new_inv:
+        raise HTTPException(status_code=404, detail="Source investigation not found")
+    return new_inv
 
 
 # --- Graph & Entities ---

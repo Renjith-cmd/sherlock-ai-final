@@ -119,6 +119,99 @@ class DatabaseRepository:
             updated_at=r["updated_at"]
         )
 
+    def update_investigation(self, inv_id: str, title: Optional[str] = None, description: Optional[str] = None, tags: Optional[List[str]] = None) -> Optional[Investigation]:
+        conn = get_connection(self.db_file)
+        with conn:
+            cur = conn.execute("SELECT * FROM investigations WHERE id = ?", (inv_id,))
+            row = cur.fetchone()
+            if not row:
+                conn.close()
+                return None
+            new_title = title if title is not None else row["title"]
+            new_desc = description if description is not None else row["description"]
+            new_tags = tags if tags is not None else json.loads(row["tags"])
+            from datetime import datetime, timezone
+            updated_at = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "UPDATE investigations SET title = ?, description = ?, tags = ?, updated_at = ? WHERE id = ?",
+                (new_title, new_desc, json.dumps(new_tags), updated_at, inv_id)
+            )
+            cur = conn.execute("SELECT * FROM investigations WHERE id = ?", (inv_id,))
+            r = cur.fetchone()
+        conn.close()
+        return Investigation(
+            id=r["id"],
+            title=r["title"],
+            description=r["description"],
+            tags=json.loads(r["tags"]),
+            is_archived=bool(r["is_archived"]),
+            created_at=r["created_at"],
+            updated_at=r["updated_at"]
+        )
+
+    def delete_investigation(self, inv_id: str) -> bool:
+        conn = get_connection(self.db_file)
+        with conn:
+            cur = conn.execute("DELETE FROM investigations WHERE id = ?", (inv_id,))
+            deleted = cur.rowcount > 0
+        conn.close()
+        return deleted
+
+    def duplicate_investigation(self, inv_id: str, new_title: Optional[str] = None) -> Optional[Investigation]:
+        source = self.get_investigation(inv_id)
+        if not source:
+            return None
+        import uuid
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        new_inv_id = str(uuid.uuid4())
+        title = new_title or f"{source.title} (Copy)"
+        new_inv = Investigation(
+            id=new_inv_id,
+            title=title,
+            description=source.description,
+            tags=source.tags,
+            created_at=now,
+            updated_at=now
+        )
+        self.create_investigation(new_inv)
+
+        # Clone all entities & map old IDs to new IDs
+        old_entities = self.get_entities_for_investigation(inv_id)
+        id_map: Dict[str, str] = {}
+        for ent in old_entities:
+            new_ent_id = str(uuid.uuid4())
+            id_map[ent.id] = new_ent_id
+            cloned_ent = Entity(
+                id=new_ent_id,
+                investigation_id=new_inv_id,
+                type=ent.type,
+                label=ent.label,
+                properties=ent.properties,
+                provenance=ent.provenance,
+                created_at=now,
+                updated_at=now
+            )
+            self.create_entity(cloned_ent)
+
+        # Clone all relationships
+        old_rels = self.get_relationships_for_investigation(inv_id)
+        for rel in old_rels:
+            if rel.source_id in id_map and rel.target_id in id_map:
+                cloned_rel = Relationship(
+                    id=str(uuid.uuid4()),
+                    investigation_id=new_inv_id,
+                    source_id=id_map[rel.source_id],
+                    target_id=id_map[rel.target_id],
+                    type=rel.type,
+                    properties=rel.properties,
+                    provenance=rel.provenance,
+                    created_at=now
+                )
+                self.create_relationship(cloned_rel)
+
+        return new_inv
+
     def create_entity(self, entity: Entity) -> Entity:
         conn = get_connection(self.db_file)
         with conn:
