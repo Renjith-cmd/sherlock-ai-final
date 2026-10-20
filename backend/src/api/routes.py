@@ -80,6 +80,8 @@ def duplicate_investigation(inv_id: str, payload: Optional[DuplicateRequest] = N
     return new_inv
 
 
+from src.core.validation import normalize_and_validate_entity, ValidationError
+
 # --- Graph & Entities ---
 
 @router.get("/investigations/{inv_id}/graph")
@@ -101,12 +103,18 @@ def add_entity(inv_id: str, req: CreateEntityRequest):
     inv = repo.get_investigation(inv_id)
     if not inv:
         raise HTTPException(status_code=404, detail="Investigation not found")
+    
+    try:
+        norm_label, norm_props = normalize_and_validate_entity(req.type, req.label, req.properties)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
     provenance = req.provenance or Provenance(source="user_input", method="manual")
     entity = Entity(
         investigation_id=inv_id,
         type=req.type,
-        label=req.label,
-        properties=req.properties,
+        label=norm_label,
+        properties=norm_props,
         provenance=provenance
     )
     return repo.create_entity(entity)

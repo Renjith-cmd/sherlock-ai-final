@@ -5,7 +5,7 @@
 | **Phase 1** | Application Foundation (FastAPI, SQLite, Vite, React, Health) | Moderate | Step 1 | **COMPLETED** | 5/5 Pytest unit tests passed, live health & E2E passed |
 | **Phase 2** | Interactive Graph Canvas (Cytoscape, Multi-Select, Context Menu, Layouts, Mutations) | High | Step 2 | **COMPLETED** | Cytoscape layouts, context menu, delete/edit, backend API tests passed |
 | **Phase 3** | Investigation & Case Management (CRUD, Duplication, Cloned Graphs, Isolation) | Moderate | Step 3 | **COMPLETED** | API test suite passed, frontend case modal & duplicate verified |
-| **Phase 4** | Typed Entity & Relationship Engine (UUIDs, Provenance, Types) | Moderate | Step 4 | PENDING | Model & DB unit tests |
+| **Phase 4** | Typed Entity & Relationship Engine (Normalization, Validation, Properties) | Moderate | Step 4 | **COMPLETED** | Normalization & algorithm detection tests (8/8 tests passed) |
 | **Phase 5** | Transformation Framework (Registry, Execution, Preview, Merge) | High | Step 5 | PENDING | Engine unit tests |
 | **Phase 6** | Legitimate Data Sources (DNS, RDAP, File Hashing, IP/URL Parsing) | Moderate | Step 6 | PENDING | Functional adapter tests |
 | **Phase 7** | Graph Analysis Tools (Shortest Path, Neighbors, Centrality) | Moderate | Step 7 | PENDING | Graph algorithm tests |
