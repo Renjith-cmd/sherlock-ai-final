@@ -26,7 +26,8 @@ import {
   Plus,
   Copy,
   FolderOpen,
-  Activity
+  Activity,
+  Download
 } from "lucide-react";
 
 interface Entity {
@@ -580,6 +581,32 @@ export const App: React.FC = () => {
 
         {/* Investigation Selector & Modal Launcher */}
         <div className="top-actions">
+          {/* Export Actions */}
+          <button
+            className="tool-btn"
+            style={{ background: "#1e293b", border: "1px solid #2a3749" }}
+            title="Export Graph to JSON"
+            onClick={() => {
+              if (investigationId) {
+                window.open(`http://127.0.0.1:8080/api/investigations/${investigationId}/export/json`, "_blank");
+              }
+            }}
+          >
+            <Download size={13} color="#10b981" /> JSON
+          </button>
+          <button
+            className="tool-btn"
+            style={{ background: "#1e293b", border: "1px solid #2a3749" }}
+            title="Generate Forensic Report"
+            onClick={() => {
+              if (investigationId) {
+                window.open(`http://127.0.0.1:8080/api/investigations/${investigationId}/report`, "_blank");
+              }
+            }}
+          >
+            <FileText size={13} color="#f59e0b" /> Report
+          </button>
+
           <button
             className="tool-btn"
             style={{ background: "#1e293b", border: "1px solid #2a3749" }}

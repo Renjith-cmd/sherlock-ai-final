@@ -82,6 +82,8 @@ def duplicate_investigation(inv_id: str, payload: Optional[DuplicateRequest] = N
 
 
 from src.core.graph_analysis import GraphAnalyzer
+from src.core.export_service import ExportService
+from fastapi.responses import PlainTextResponse
 
 # --- Graph & Entities ---
 
@@ -97,6 +99,47 @@ def get_graph(inv_id: str):
         "nodes": entities,
         "edges": relationships
     }
+
+
+@router.get("/investigations/{inv_id}/export/json")
+def export_investigation_json(inv_id: str):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    entities = repo.get_entities_for_investigation(inv_id)
+    relationships = repo.get_relationships_for_investigation(inv_id)
+    return ExportService.export_graph_json(inv, entities, relationships)
+
+
+@router.get("/investigations/{inv_id}/export/entities.csv", response_class=PlainTextResponse)
+def export_investigation_entities_csv(inv_id: str):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    entities = repo.get_entities_for_investigation(inv_id)
+    csv_str = ExportService.export_entities_csv(entities)
+    return PlainTextResponse(content=csv_str, media_type="text/csv")
+
+
+@router.get("/investigations/{inv_id}/export/relationships.csv", response_class=PlainTextResponse)
+def export_investigation_relationships_csv(inv_id: str):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    relationships = repo.get_relationships_for_investigation(inv_id)
+    csv_str = ExportService.export_relationships_csv(relationships)
+    return PlainTextResponse(content=csv_str, media_type="text/csv")
+
+
+@router.get("/investigations/{inv_id}/report", response_class=PlainTextResponse)
+def get_investigation_report(inv_id: str):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    entities = repo.get_entities_for_investigation(inv_id)
+    relationships = repo.get_relationships_for_investigation(inv_id)
+    report_md = ExportService.generate_investigation_report(inv, entities, relationships)
+    return PlainTextResponse(content=report_md, media_type="text/markdown")
 
 
 @router.get("/investigations/{inv_id}/analytics")
