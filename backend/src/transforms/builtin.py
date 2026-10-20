@@ -1,10 +1,13 @@
-"""Legitimate built-in transforms for DNS, network infrastructure, and file hashing."""
+"""Legitimate built-in transforms for DNS, RDAP, Network Infrastructure, and Document Analysis."""
 
 import dns.resolver
+import dns.reversename
 import hashlib
 import re
 from typing import List, Dict, Any
 from urllib.parse import urlparse
+import httpx
+
 from src.core.models import Entity, EntityType, TransformResultCandidate
 from src.core.transforms import BaseTransform, TransformMetadata, registry
 
@@ -38,8 +41,7 @@ class DnsToIpTransform(BaseTransform):
                         evidence={"raw_answer": ip_str, "resolver": "system_dns"}
                     )
                 )
-        except Exception as e:
-            # Return empty if nxdomain or timeout, preserving resilience
+        except Exception:
             pass
         return candidates
 
@@ -73,6 +75,113 @@ class DnsToMxTransform(BaseTransform):
                         evidence={"preference": rdata.preference, "raw_host": mx_host}
                     )
                 )
+        except Exception:
+            pass
+        return candidates
+
+
+class DnsToNsTransform(BaseTransform):
+    metadata = TransformMetadata(
+        id="dns_resolve_ns_record",
+        name="Find Nameservers (NS)",
+        description="Queries authoritative DNS nameserver records for the domain.",
+        category="Network Infrastructure",
+        accepted_types=[EntityType.DOMAIN],
+        output_types=[EntityType.DOMAIN],
+        requires_credentials=False,
+        is_local=False,
+    )
+
+    async def execute(self, entity: Entity, config: Dict[str, Any] = None) -> List[TransformResultCandidate]:
+        domain = entity.label.strip().lower()
+        candidates: List[TransformResultCandidate] = []
+        try:
+            answers = dns.resolver.resolve(domain, "NS", lifetime=5.0)
+            for rdata in answers:
+                ns_host = str(rdata.target).rstrip(".")
+                candidates.append(
+                    TransformResultCandidate(
+                        entity_type=EntityType.DOMAIN,
+                        label=ns_host,
+                        properties={"record_type": "NS"},
+                        relationship_type="NAMESERVER",
+                        confidence=1.0,
+                        evidence={"raw_host": ns_host}
+                    )
+                )
+        except Exception:
+            pass
+        return candidates
+
+
+class IpReverseDnsTransform(BaseTransform):
+    metadata = TransformMetadata(
+        id="ip_reverse_dns_ptr",
+        name="Reverse DNS Lookup (PTR)",
+        description="Performs reverse DNS PTR lookup to discover the host name assigned to this IP.",
+        category="Network Infrastructure",
+        accepted_types=[EntityType.IP],
+        output_types=[EntityType.DOMAIN],
+        requires_credentials=False,
+        is_local=False,
+    )
+
+    async def execute(self, entity: Entity, config: Dict[str, Any] = None) -> List[TransformResultCandidate]:
+        ip_addr = entity.label.strip()
+        candidates: List[TransformResultCandidate] = []
+        try:
+            rev_name = dns.reversename.from_address(ip_addr)
+            answers = dns.resolver.resolve(rev_name, "PTR", lifetime=5.0)
+            for rdata in answers:
+                ptr_host = str(rdata.target).rstrip(".")
+                candidates.append(
+                    TransformResultCandidate(
+                        entity_type=EntityType.DOMAIN,
+                        label=ptr_host,
+                        properties={"record_type": "PTR"},
+                        relationship_type="REVERSE_PTR",
+                        confidence=1.0,
+                        evidence={"ip": ip_addr, "ptr_host": ptr_host}
+                    )
+                )
+        except Exception:
+            pass
+        return candidates
+
+
+class RdapWhoisTransform(BaseTransform):
+    metadata = TransformMetadata(
+        id="rdap_whois_lookup",
+        name="RDAP / Registration Authority Lookup",
+        description="Queries public Registration Data Access Protocol (RDAP) servers for network/domain ownership.",
+        category="Attribution & Ownership",
+        accepted_types=[EntityType.IP, EntityType.DOMAIN],
+        output_types=[EntityType.ORGANIZATION],
+        requires_credentials=False,
+        is_local=False,
+    )
+
+    async def execute(self, entity: Entity, config: Dict[str, Any] = None) -> List[TransformResultCandidate]:
+        val = entity.label.strip().lower()
+        candidates: List[TransformResultCandidate] = []
+        try:
+            url = f"https://rdap.arin.net/registry/ip/{val}" if entity.type == EntityType.IP else f"https://rdap.org/domain/{val}"
+            async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+                res = await client.get(url, headers={"Accept": "application/rdap+json, application/json"})
+                if res.status_code == 200:
+                    data = res.json()
+                    name = data.get("name") or data.get("handle")
+                    if name:
+                        candidates.append(
+                            TransformResultCandidate(
+                                entity_type=EntityType.ORGANIZATION,
+                                label=str(name),
+                                properties={"handle": data.get("handle"), "country": data.get("country")},
+                                relationship_type="REGISTERED_TO",
+                                confidence=0.95,
+                                evidence={"rdap_endpoint": url, "name": name}
+                            )
+                        )
         except Exception:
             pass
         return candidates
@@ -140,11 +249,61 @@ class EmailToDomainTransform(BaseTransform):
         return candidates
 
 
+class TextEntityExtractorTransform(BaseTransform):
+    metadata = TransformMetadata(
+        id="text_extract_entities",
+        name="Extract Indicators from Document Text",
+        description="Extracts embedded IP addresses, domains, and email addresses from document contents or text notes.",
+        category="Document Intelligence",
+        accepted_types=[EntityType.DOCUMENT, EntityType.CUSTOM],
+        output_types=[EntityType.DOMAIN, EntityType.IP, EntityType.EMAIL],
+        requires_credentials=False,
+        is_local=True,
+    )
+
+    async def execute(self, entity: Entity, config: Dict[str, Any] = None) -> List[TransformResultCandidate]:
+        # Inspect label or properties['content']
+        text = str(entity.properties.get("content") or entity.label)
+        candidates: List[TransformResultCandidate] = []
+
+        # Find emails
+        emails = set(re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b", text))
+        for em in emails:
+            candidates.append(
+                TransformResultCandidate(
+                    entity_type=EntityType.EMAIL,
+                    label=em.lower(),
+                    relationship_type="MENTIONED_IN",
+                    confidence=0.9,
+                    evidence={"matched_pattern": "email_regex"}
+                )
+            )
+
+        # Find IPv4 addresses
+        ips = set(re.findall(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b", text))
+        for ip in ips:
+            candidates.append(
+                TransformResultCandidate(
+                    entity_type=EntityType.IP,
+                    label=ip,
+                    relationship_type="MENTIONED_IN",
+                    confidence=0.9,
+                    evidence={"matched_pattern": "ipv4_regex"}
+                )
+            )
+
+        return candidates
+
+
 def register_standard_transforms():
     registry.register(DnsToIpTransform())
     registry.register(DnsToMxTransform())
+    registry.register(DnsToNsTransform())
+    registry.register(IpReverseDnsTransform())
+    registry.register(RdapWhoisTransform())
     registry.register(UrlToDomainTransform())
     registry.register(EmailToDomainTransform())
+    registry.register(TextEntityExtractorTransform())
 
 
 register_standard_transforms()

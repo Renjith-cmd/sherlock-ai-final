@@ -6,8 +6,8 @@
 | **Phase 2** | Interactive Graph Canvas (Cytoscape, Multi-Select, Context Menu, Layouts, Mutations) | High | Step 2 | **COMPLETED** | Cytoscape layouts, context menu, delete/edit, backend API tests passed |
 | **Phase 3** | Investigation & Case Management (CRUD, Duplication, Cloned Graphs, Isolation) | Moderate | Step 3 | **COMPLETED** | API test suite passed, frontend case modal & duplicate verified |
 | **Phase 4** | Typed Entity & Relationship Engine (Normalization, Validation, Properties) | Moderate | Step 4 | **COMPLETED** | Normalization & algorithm detection tests (8/8 tests passed) |
-| **Phase 5** | Transformation Framework (Registry, Execution, Preview, Merge) | High | Step 5 | PENDING | Engine unit tests |
-| **Phase 6** | Legitimate Data Sources (DNS, RDAP, File Hashing, IP/URL Parsing) | Moderate | Step 6 | PENDING | Functional adapter tests |
+| **Phase 5** | Transformation Framework (Registry, Async Execution, Preview, Merge) | High | Step 5 | **COMPLETED** | Registry, dynamic compatibility, candidate merge (11/11 tests) |
+| **Phase 6** | Legitimate Data Sources (DNS A/MX/NS, Reverse PTR, RDAP, Doc Extract) | Moderate | Step 6 | **COMPLETED** | Live DNS, reverse PTR, RDAP whois, and regex text extraction |
 | **Phase 7** | Graph Analysis Tools (Shortest Path, Neighbors, Centrality) | Moderate | Step 7 | PENDING | Graph algorithm tests |
 | **Phase 8** | Evidence & Provenance Tracking (Timestamps, Sources, Audit Log) | Moderate | Step 8 | PENDING | Provenance model tests |
 | **Phase 9** | Search, Filter & Node Highlighting | Moderate | Step 9 | PENDING | Search query tests |
