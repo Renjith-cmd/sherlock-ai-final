@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import cytoscape from "cytoscape";
-import type { Core } from "cytoscape";
+import type { Core, EventObject } from "cytoscape";
 import {
   Globe,
   Server,
@@ -13,7 +13,17 @@ import {
   Database,
   CheckCircle,
   XCircle,
-  Compass
+  Compass,
+  Trash2,
+  Edit2,
+  Layers,
+  Search,
+  Filter,
+  User,
+  Building,
+  FileText,
+  Hash,
+  ArrowRight
 } from "lucide-react";
 
 interface Entity {
@@ -56,14 +66,29 @@ export const App: React.FC = () => {
   const [investigationId, setInvestigationId] = useState<string>("");
   const [investigations, setInvestigations] = useState<any[]>([]);
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedNodeCount, setSelectedNodeCount] = useState<number>(0);
   const [transforms, setTransforms] = useState<TransformMeta[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [isRunningTransform, setIsRunningTransform] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [currentLayout, setCurrentLayout] = useState<string>("cose");
+
+  // Context Menu State
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    entity: Entity | null;
+  } | null>(null);
+
+  // Link mode state (creating an edge between two nodes)
+  const [linkSourceNodeId, setLinkSourceNodeId] = useState<string | null>(null);
 
   const cyRef = useRef<HTMLDivElement>(null);
   const cyInstance = useRef<Core | null>(null);
 
-  // Initialize or fetch default investigation
+  // Fetch investigations
   useEffect(() => {
     fetch("http://127.0.0.1:8080/api/investigations")
       .then((res) => res.json())
@@ -72,7 +97,6 @@ export const App: React.FC = () => {
         if (data.length > 0) {
           setInvestigationId(data[0].id);
         } else {
-          // Create initial investigation
           fetch("http://127.0.0.1:8080/api/investigations", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -95,7 +119,7 @@ export const App: React.FC = () => {
       .catch(console.error);
   }, []);
 
-  // Initialize Cytoscape
+  // Cytoscape initialization
   useEffect(() => {
     if (!cyRef.current) return;
 
@@ -111,18 +135,51 @@ export const App: React.FC = () => {
             label: "data(label)",
             color: "#f1f5f9",
             "font-size": "11px",
+            "font-weight": 600,
             "text-valign": "bottom",
             "text-margin-y": 6,
-            width: 38,
-            height: 38,
+            width: 40,
+            height: 40,
+            "overlay-padding": 4,
           },
+        },
+        {
+          selector: "node[type = 'domain']",
+          style: { "border-color": "#3b82f6", "background-color": "#1e3a8a" },
+        },
+        {
+          selector: "node[type = 'ip']",
+          style: { "border-color": "#10b981", "background-color": "#064e3b" },
+        },
+        {
+          selector: "node[type = 'email']",
+          style: { "border-color": "#f59e0b", "background-color": "#78350f" },
+        },
+        {
+          selector: "node[type = 'person']",
+          style: { "border-color": "#ec4899", "background-color": "#831843" },
+        },
+        {
+          selector: "node[type = 'organization']",
+          style: { "border-color": "#a855f7", "background-color": "#581c87" },
+        },
+        {
+          selector: "node[type = 'file_hash']",
+          style: { "border-color": "#64748b", "background-color": "#334155" },
         },
         {
           selector: "node:selected",
           style: {
-            "border-color": "#10b981",
+            "border-color": "#38bdf8",
             "border-width": 4,
-            "background-color": "#0f766e",
+          },
+        },
+        {
+          selector: "node.highlighted",
+          style: {
+            "border-color": "#eab308",
+            "border-width": 4,
+            "background-color": "#713f12",
           },
         },
         {
@@ -137,19 +194,74 @@ export const App: React.FC = () => {
             color: "#94a3b8",
             "font-size": "9px",
             "text-rotation": "autorotate",
+            "text-background-opacity": 0.8,
+            "text-background-color": "#0f172a",
+            "text-background-padding": "2px",
+          },
+        },
+        {
+          selector: "edge:selected",
+          style: {
+            width: 4,
+            "line-color": "#38bdf8",
+            "target-arrow-color": "#38bdf8",
+            color: "#38bdf8",
           },
         },
       ],
       layout: { name: "cose", animate: false },
     });
 
-    cyInstance.current.on("select", "node", (evt) => {
-      const nodeData = evt.target.data("entity");
-      setSelectedEntity(nodeData);
+    const cy = cyInstance.current;
+
+    // Selection handlers
+    cy.on("select", "node", (evt: EventObject) => {
+      const selected = cy.$("node:selected");
+      setSelectedNodeCount(selected.length);
+      if (selected.length === 1) {
+        setSelectedEntity(evt.target.data("entity"));
+      } else {
+        setSelectedEntity(null);
+      }
+      setSelectedEdgeId(null);
     });
 
-    cyInstance.current.on("unselect", "node", () => {
+    cy.on("unselect", "node", () => {
+      const selected = cy.$("node:selected");
+      setSelectedNodeCount(selected.length);
+      if (selected.length === 1) {
+        setSelectedEntity(selected[0].data("entity"));
+      } else {
+        setSelectedEntity(null);
+      }
+    });
+
+    cy.on("select", "edge", (evt: EventObject) => {
+      setSelectedEdgeId(evt.target.id());
       setSelectedEntity(null);
+    });
+
+    cy.on("unselect", "edge", () => {
+      setSelectedEdgeId(null);
+    });
+
+    // Right-click Context Menu on Nodes
+    cy.on("cxttap", "node", (evt: EventObject) => {
+      evt.originalEvent.preventDefault();
+      const node = evt.target;
+      const renderedPos = node.renderedPosition();
+      setContextMenu({
+        x: renderedPos.x + 280, // Offset by sidebar
+        y: renderedPos.y + 60,  // Offset by header
+        entity: node.data("entity"),
+      });
+    });
+
+    // Dismiss context menu on canvas tap
+    cy.on("tap", (evt: EventObject) => {
+      if (evt.target === cy) {
+        setContextMenu(null);
+      }
     });
 
     return () => {
@@ -159,8 +271,8 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Load Graph for active investigation
-  const loadGraph = (invId: string) => {
+  // Load Graph elements
+  const loadGraph = (invId: string, layoutName: string = currentLayout) => {
     if (!invId || !cyInstance.current) return;
     fetch(`http://127.0.0.1:8080/api/investigations/${invId}/graph`)
       .then((res) => res.json())
@@ -168,15 +280,13 @@ export const App: React.FC = () => {
         const cy = cyInstance.current!;
         cy.elements().remove();
 
-        // Add nodes
         data.nodes.forEach((n: Entity) => {
           cy.add({
             group: "nodes",
-            data: { id: n.id, label: n.label, entity: n },
+            data: { id: n.id, label: n.label, type: n.type, entity: n },
           });
         });
 
-        // Add edges
         data.edges.forEach((e: Relationship) => {
           cy.add({
             group: "edges",
@@ -184,8 +294,14 @@ export const App: React.FC = () => {
           });
         });
 
-        cy.layout({ name: "cose", animate: true }).run();
+        applyLayout(layoutName);
       });
+  };
+
+  const applyLayout = (name: string) => {
+    if (!cyInstance.current) return;
+    setCurrentLayout(name);
+    cyInstance.current.layout({ name, animate: true } as any).run();
   };
 
   useEffect(() => {
@@ -193,6 +309,32 @@ export const App: React.FC = () => {
       loadGraph(investigationId);
     }
   }, [investigationId]);
+
+  // Search & Type Filtering
+  useEffect(() => {
+    if (!cyInstance.current) return;
+    const cy = cyInstance.current;
+    cy.batch(() => {
+      cy.nodes().forEach((node) => {
+        const matchesType = typeFilter === "all" || node.data("type") === typeFilter;
+        const matchesSearch =
+          !searchTerm ||
+          node.data("label").toLowerCase().includes(searchTerm.toLowerCase());
+
+        if (matchesType) {
+          node.style("display", "element");
+        } else {
+          node.style("display", "none");
+        }
+
+        if (searchTerm && matchesSearch && matchesType) {
+          node.addClass("highlighted");
+        } else {
+          node.removeClass("highlighted");
+        }
+      });
+    });
+  }, [searchTerm, typeFilter]);
 
   // Add Entity manually
   const handleAddEntity = (type: string, defaultLabel: string) => {
@@ -210,10 +352,88 @@ export const App: React.FC = () => {
         if (cy) {
           cy.add({
             group: "nodes",
-            data: { id: newEntity.id, label: newEntity.label, entity: newEntity },
+            data: { id: newEntity.id, label: newEntity.label, type: newEntity.type, entity: newEntity },
           });
-          cy.layout({ name: "cose", animate: true }).run();
+          applyLayout(currentLayout);
         }
+      });
+  };
+
+  // Delete Entity
+  const handleDeleteEntity = (entityId: string) => {
+    if (!window.confirm("Are you sure you want to delete this entity from the investigation?")) return;
+    fetch(`http://127.0.0.1:8080/api/entities/${entityId}`, { method: "DELETE" })
+      .then((res) => res.json())
+      .then(() => {
+        cyInstance.current?.$(`#${entityId}`).remove();
+        setSelectedEntity(null);
+        setContextMenu(null);
+      });
+  };
+
+  // Delete Edge
+  const handleDeleteEdge = (edgeId: string) => {
+    if (!window.confirm("Delete relationship link?")) return;
+    fetch(`http://127.0.0.1:8080/api/relationships/${edgeId}`, { method: "DELETE" })
+      .then((res) => res.json())
+      .then(() => {
+        cyInstance.current?.$(`#${edgeId}`).remove();
+        setSelectedEdgeId(null);
+      });
+  };
+
+  // Rename Entity
+  const handleRenameEntity = (entity: Entity) => {
+    const newLabel = window.prompt("Edit entity label:", entity.label);
+    if (!newLabel || newLabel === entity.label) return;
+
+    fetch(`http://127.0.0.1:8080/api/entities/${entity.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: newLabel }),
+    })
+      .then((r) => r.json())
+      .then((updated) => {
+        const node = cyInstance.current?.$(`#${entity.id}`);
+        if (node) {
+          node.data("label", updated.label);
+          node.data("entity", updated);
+        }
+        setSelectedEntity(updated);
+        setContextMenu(null);
+      });
+  };
+
+  // Link Mode Handler
+  const handleStartLinking = (sourceId: string) => {
+    setLinkSourceNodeId(sourceId);
+    setContextMenu(null);
+  };
+
+  const handleFinishLinking = (targetId: string) => {
+    if (!linkSourceNodeId || linkSourceNodeId === targetId || !investigationId) {
+      setLinkSourceNodeId(null);
+      return;
+    }
+
+    const relType = window.prompt("Enter relationship label:", "CONNECTED_TO") || "CONNECTED_TO";
+
+    fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/relationships`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source_id: linkSourceNodeId,
+        target_id: targetId,
+        type: relType,
+      }),
+    })
+      .then((r) => r.json())
+      .then((rel) => {
+        cyInstance.current?.add({
+          group: "edges",
+          data: { id: rel.id, source: rel.source_id, target: rel.target_id, label: rel.type },
+        });
+        setLinkSourceNodeId(null);
       });
   };
 
@@ -221,6 +441,7 @@ export const App: React.FC = () => {
   const handleRunTransform = (tId: string) => {
     if (!selectedEntity || !investigationId) return;
     setIsRunningTransform(true);
+    setContextMenu(null);
     fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/transforms/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -259,6 +480,37 @@ export const App: React.FC = () => {
           <Compass className="brand-icon" size={22} />
           <span>ARKANA INVESTIGATOR</span>
         </div>
+
+        {/* Search & Filter Bar */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div style={{ display: "flex", alignItems: "center", background: "#1e293b", padding: "4px 8px", borderRadius: "6px", border: "1px solid #2a3749" }}>
+            <Search size={14} color="#94a3b8" style={{ marginRight: "6px" }} />
+            <input
+              type="text"
+              placeholder="Search graph entities..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              style={{ background: "transparent", border: "none", color: "#f1f5f9", fontSize: "12px", outline: "none", width: "160px" }}
+            />
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", background: "#1e293b", padding: "4px 8px", borderRadius: "6px", border: "1px solid #2a3749" }}>
+            <Filter size={14} color="#94a3b8" style={{ marginRight: "6px" }} />
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+              style={{ background: "transparent", border: "none", color: "#f1f5f9", fontSize: "12px", outline: "none" }}
+            >
+              <option value="all">All Types</option>
+              <option value="domain">Domain</option>
+              <option value="ip">IP</option>
+              <option value="email">Email</option>
+              <option value="person">Person</option>
+              <option value="organization">Organization</option>
+            </select>
+          </div>
+        </div>
+
         <div className="top-actions">
           <Database size={16} color="#94a3b8" />
           <select
@@ -281,6 +533,19 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* Link creation banner */}
+      {linkSourceNodeId && (
+        <div style={{ background: "#0284c7", color: "#fff", padding: "6px 16px", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span><b>Link Mode:</b> Click on any target entity to create a relationship.</span>
+          <button
+            onClick={() => setLinkSourceNodeId(null)}
+            style={{ background: "#0369a1", border: "none", color: "#fff", padding: "2px 8px", borderRadius: "4px", cursor: "pointer" }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
       <div className="workbench-body">
         {/* Left Palette */}
         <aside className="nav-sidebar">
@@ -296,8 +561,20 @@ export const App: React.FC = () => {
               <button className="palette-btn" onClick={() => handleAddEntity("email", "admin@target.com")}>
                 <Mail size={14} color="#f59e0b" /> Email
               </button>
-              <button className="palette-btn" onClick={() => handleAddEntity("url", "https://target.com/api")}>
+              <button className="palette-btn" onClick={() => handleAddEntity("url", "https://target.com")}>
                 <LinkIcon size={14} color="#8b5cf6" /> URL
+              </button>
+              <button className="palette-btn" onClick={() => handleAddEntity("person", "John Doe")}>
+                <User size={14} color="#ec4899" /> Person
+              </button>
+              <button className="palette-btn" onClick={() => handleAddEntity("organization", "Acme Corp")}>
+                <Building size={14} color="#a855f7" /> Organization
+              </button>
+              <button className="palette-btn" onClick={() => handleAddEntity("document", "Doc-01.pdf")}>
+                <FileText size={14} color="#06b6d4" /> Document
+              </button>
+              <button className="palette-btn" onClick={() => handleAddEntity("file_hash", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")}>
+                <Hash size={14} color="#64748b" /> File Hash
               </button>
             </div>
           </div>
@@ -325,6 +602,10 @@ export const App: React.FC = () => {
                     </button>
                   ))}
               </div>
+            ) : selectedNodeCount > 1 ? (
+              <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                {selectedNodeCount} entities selected (multi-selection active).
+              </div>
             ) : (
               <div style={{ fontSize: "12px", color: "#64748b" }}>
                 Select a node on the canvas to view compatible transforms.
@@ -345,12 +626,77 @@ export const App: React.FC = () => {
             <button className="tool-btn" onClick={() => cyInstance.current?.fit(undefined, 30)}>
               <Maximize2 size={14} /> Fit View
             </button>
-            <button className="tool-btn" onClick={() => cyInstance.current?.layout({ name: "cose", animate: true }).run()}>
-              Relayout
-            </button>
+
+            {/* Layout Algorithms */}
+            <div style={{ display: "flex", alignItems: "center", gap: "4px", borderLeft: "1px solid #334155", paddingLeft: "6px" }}>
+              <Layers size={14} color="#94a3b8" />
+              <select
+                value={currentLayout}
+                onChange={(e) => applyLayout(e.target.value)}
+                style={{ background: "#1e293b", border: "none", color: "#f1f5f9", fontSize: "11px", padding: "2px 4px", borderRadius: "4px" }}
+              >
+                <option value="cose">Force-Directed (CoSE)</option>
+                <option value="circle">Circular</option>
+                <option value="grid">Grid</option>
+                <option value="breadthfirst">Hierarchical (Tree)</option>
+                <option value="concentric">Concentric</option>
+              </select>
+            </div>
           </div>
 
-          <div id="cy-container" ref={cyRef} />
+          <div
+            id="cy-container"
+            ref={cyRef}
+            onClick={() => {
+              if (linkSourceNodeId && selectedEntity) {
+                handleFinishLinking(selectedEntity.id);
+              }
+            }}
+          />
+
+          {/* Context Menu Popup */}
+          {contextMenu && (
+            <div
+              style={{
+                position: "absolute",
+                left: `${contextMenu.x}px`,
+                top: `${contextMenu.y}px`,
+                background: "#1e293b",
+                border: "1px solid #334155",
+                borderRadius: "6px",
+                padding: "6px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "4px",
+                zIndex: 50,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+                minWidth: "160px",
+              }}
+            >
+              <div style={{ padding: "4px 8px", fontSize: "11px", fontWeight: 700, color: "#94a3b8", borderBottom: "1px solid #334155" }}>
+                {contextMenu.entity?.label}
+              </div>
+              <button
+                className="tool-btn"
+                onClick={() => contextMenu.entity && handleStartLinking(contextMenu.entity.id)}
+              >
+                <ArrowRight size={14} color="#38bdf8" /> Connect Relationship
+              </button>
+              <button
+                className="tool-btn"
+                onClick={() => contextMenu.entity && handleRenameEntity(contextMenu.entity)}
+              >
+                <Edit2 size={14} color="#fbbf24" /> Rename Entity
+              </button>
+              <button
+                className="tool-btn"
+                style={{ color: "#f87171" }}
+                onClick={() => contextMenu.entity && handleDeleteEntity(contextMenu.entity.id)}
+              >
+                <Trash2 size={14} /> Delete from Graph
+              </button>
+            </div>
+          )}
 
           {/* Bottom Candidates Drawer */}
           {candidates.length > 0 && (
@@ -390,9 +736,30 @@ export const App: React.FC = () => {
 
         {/* Right Inspector */}
         <aside className="inspector-panel">
-          <div className="inspector-header">Entity Inspector</div>
+          <div className="inspector-header">Inspector</div>
           {selectedEntity ? (
             <div className="inspector-content">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span className="prop-label">Entity Actions</span>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <button
+                    className="tool-btn"
+                    style={{ padding: "4px", background: "#334155" }}
+                    title="Rename Entity"
+                    onClick={() => handleRenameEntity(selectedEntity)}
+                  >
+                    <Edit2 size={12} />
+                  </button>
+                  <button
+                    className="tool-btn"
+                    style={{ padding: "4px", background: "#7f1d1d", color: "#fca5a5" }}
+                    title="Delete Entity"
+                    onClick={() => handleDeleteEntity(selectedEntity.id)}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
               <div className="property-group">
                 <span className="prop-label">Label</span>
                 <div className="prop-value">{selectedEntity.label}</div>
@@ -424,9 +791,27 @@ export const App: React.FC = () => {
                 </div>
               </div>
             </div>
+          ) : selectedEdgeId ? (
+            <div className="inspector-content">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span className="prop-label">Relationship Selected</span>
+                <button
+                  className="tool-btn"
+                  style={{ padding: "4px", background: "#7f1d1d", color: "#fca5a5" }}
+                  title="Delete Relationship"
+                  onClick={() => handleDeleteEdge(selectedEdgeId)}
+                >
+                  <Trash2 size={12} /> Delete Link
+                </button>
+              </div>
+              <div className="property-group">
+                <span className="prop-label">Edge ID</span>
+                <div className="prop-value" style={{ fontSize: "11px" }}>{selectedEdgeId}</div>
+              </div>
+            </div>
           ) : (
             <div style={{ padding: "14px", fontSize: "12px", color: "#64748b" }}>
-              Click on an entity in the graph to view properties and provenance.
+              Click on an entity or relationship on the canvas to inspect properties, provenance, or edit attributes.
             </div>
           )}
         </aside>

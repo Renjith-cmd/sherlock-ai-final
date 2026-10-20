@@ -79,6 +79,32 @@ def add_entity(inv_id: str, req: CreateEntityRequest):
     return repo.create_entity(entity)
 
 
+@router.patch("/entities/{entity_id}", response_model=Entity)
+def update_entity_endpoint(entity_id: str, payload: Dict[str, Any]):
+    label = payload.get("label")
+    properties = payload.get("properties")
+    ent = repo.update_entity(entity_id, label=label, properties=properties)
+    if not ent:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return ent
+
+
+@router.delete("/entities/{entity_id}")
+def delete_entity_endpoint(entity_id: str):
+    success = repo.delete_entity(entity_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return {"status": "deleted", "id": entity_id}
+
+
+@router.delete("/relationships/{rel_id}")
+def delete_relationship_endpoint(rel_id: str):
+    success = repo.delete_relationship(rel_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+    return {"status": "deleted", "id": rel_id}
+
+
 @router.post("/investigations/{inv_id}/relationships", response_model=Relationship)
 def add_relationship(inv_id: str, req: CreateRelationshipRequest):
     inv = repo.get_investigation(inv_id)

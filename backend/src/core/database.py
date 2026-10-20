@@ -197,3 +197,51 @@ class DatabaseRepository:
             )
             for r in rows
         ]
+
+    def update_entity(self, entity_id: str, label: Optional[str] = None, properties: Optional[Dict[str, Any]] = None) -> Optional[Entity]:
+        conn = get_connection(self.db_file)
+        with conn:
+            cur = conn.execute("SELECT * FROM entities WHERE id = ?", (entity_id,))
+            row = cur.fetchone()
+            if not row:
+                conn.close()
+                return None
+            new_label = label if label is not None else row["label"]
+            existing_props = json.loads(row["properties"])
+            if properties is not None:
+                existing_props.update(properties)
+            from datetime import datetime, timezone
+            updated_at = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "UPDATE entities SET label = ?, properties = ?, updated_at = ? WHERE id = ?",
+                (new_label, json.dumps(existing_props), updated_at, entity_id)
+            )
+            cur = conn.execute("SELECT * FROM entities WHERE id = ?", (entity_id,))
+            r = cur.fetchone()
+        conn.close()
+        return Entity(
+            id=r["id"],
+            investigation_id=r["investigation_id"],
+            type=EntityType(r["type"]),
+            label=r["label"],
+            properties=json.loads(r["properties"]),
+            provenance=Provenance(**json.loads(r["provenance"])),
+            created_at=r["created_at"],
+            updated_at=r["updated_at"]
+        )
+
+    def delete_entity(self, entity_id: str) -> bool:
+        conn = get_connection(self.db_file)
+        with conn:
+            cur = conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+            deleted = cur.rowcount > 0
+        conn.close()
+        return deleted
+
+    def delete_relationship(self, rel_id: str) -> bool:
+        conn = get_connection(self.db_file)
+        with conn:
+            cur = conn.execute("DELETE FROM relationships WHERE id = ?", (rel_id,))
+            deleted = cur.rowcount > 0
+        conn.close()
+        return deleted

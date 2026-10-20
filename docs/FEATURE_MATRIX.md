@@ -3,7 +3,7 @@
 | Phase | Feature Description | Complexity | Planned Target | Actual Status | Test Coverage |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Phase 1** | Application Foundation (FastAPI, SQLite, Vite, React, Health) | Moderate | Step 1 | **COMPLETED** | 5/5 Pytest unit tests passed, live health & E2E passed |
-| **Phase 2** | Interactive Graph Canvas (Cytoscape, Pan/Zoom/Drag, Layouts) | High | Step 2 | PENDING | UI component tests |
+| **Phase 2** | Interactive Graph Canvas (Cytoscape, Multi-Select, Context Menu, Layouts, Mutations) | High | Step 2 | **COMPLETED** | Cytoscape layouts, context menu, delete/edit, backend API tests passed |
 | **Phase 3** | Investigation & Case Management (CRUD, Auto-save, Snapshots) | Moderate | Step 3 | PENDING | API integration tests |
 | **Phase 4** | Typed Entity & Relationship Engine (UUIDs, Provenance, Types) | Moderate | Step 4 | PENDING | Model & DB unit tests |
 | **Phase 5** | Transformation Framework (Registry, Execution, Preview, Merge) | High | Step 5 | PENDING | Engine unit tests |
