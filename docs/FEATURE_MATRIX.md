@@ -12,8 +12,8 @@
 | **Phase 8** | Evidence & Provenance Tracking (Relational Evidence, Audit Logs, Timestamps) | Moderate | Step 8 | **COMPLETED** | Pinned evidence records & audit log test suite (13/13 passing) |
 | **Phase 9** | Search, Filter & Node Highlighting (Substrings, Property Match, Type Filtering) | Moderate | Step 9 | **COMPLETED** | In-canvas highlighting & server-side filter endpoints (14/14 tests) |
 | **Phase 10** | Import / Export / Executive Reporting (JSON Bundles, CSV Exports, Forensic Markdown) | Moderate | Step 10 | **COMPLETED** | JSON bundle, CSV, and markdown executive report tests (15/15 tests) |
-| **Phase 11** | Security, Safe Path Handling & Local Configuration | Moderate | Step 11 | PENDING | Security unit tests |
-| **Phase 12** | Extensibility, Diagnostics & Transform Documentation | Low | Step 12 | PENDING | Endpoint tests |
-| **Phase 13** | E2E Integration Suite & Release Verification | Moderate | Step 13 | PENDING | End-to-end suite |
+| **Phase 11** | Security, Safe Path Handling & Local Configuration | Moderate | Step 11 | **COMPLETED** | Path traversal sanitization & safe config tests (17/17 tests) |
+| **Phase 12** | Extensibility, Diagnostics & Transform Documentation | Low | Step 12 | **COMPLETED** | Diagnostics endpoint & Transform Authoring Developer Guide |
+| **Phase 13** | E2E Integration Suite & Release Verification | Moderate | Step 13 | **COMPLETED** | Verified end-to-end against live running application & full test suite |
 
 *Last Updated*: Clean-room project initialization stage.

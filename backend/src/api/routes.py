@@ -19,6 +19,8 @@ router = APIRouter()
 repo = DatabaseRepository()
 
 
+from src.core.security import get_system_diagnostics
+
 @router.get("/health")
 def health_check():
     return {
@@ -26,6 +28,12 @@ def health_check():
         "service": "arkana-investigator",
         "transforms_loaded": len(registry.list_transforms())
     }
+
+
+@router.get("/diagnostics")
+def system_diagnostics():
+    return get_system_diagnostics()
+
 
 
 # --- Investigations ---
