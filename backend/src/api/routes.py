@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from src.core.models import Investigation, Entity, Relationship, Provenance, TransformResultCandidate
+from src.core.validation import normalize_and_validate_entity, ValidationError
 from src.core.database import DatabaseRepository
 from src.core.transforms import registry, TransformMetadata
 from src.api.schemas import (
@@ -80,7 +81,7 @@ def duplicate_investigation(inv_id: str, payload: Optional[DuplicateRequest] = N
     return new_inv
 
 
-from src.core.validation import normalize_and_validate_entity, ValidationError
+from src.core.graph_analysis import GraphAnalyzer
 
 # --- Graph & Entities ---
 
@@ -96,6 +97,31 @@ def get_graph(inv_id: str):
         "nodes": entities,
         "edges": relationships
     }
+
+
+@router.get("/investigations/{inv_id}/analytics")
+def get_graph_analytics(inv_id: str):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    entities = repo.get_entities_for_investigation(inv_id)
+    relationships = repo.get_relationships_for_investigation(inv_id)
+    analyzer = GraphAnalyzer(entities, relationships)
+    return analyzer.compute_metrics()
+
+
+@router.get("/investigations/{inv_id}/path")
+def find_shortest_path(inv_id: str, start_id: str, end_id: str):
+    inv = repo.get_investigation(inv_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    entities = repo.get_entities_for_investigation(inv_id)
+    relationships = repo.get_relationships_for_investigation(inv_id)
+    analyzer = GraphAnalyzer(entities, relationships)
+    path = analyzer.shortest_path(start_id, end_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="No path found between selected entities")
+    return {"start_id": start_id, "end_id": end_id, "path": path, "length": len(path) - 1}
 
 
 @router.post("/investigations/{inv_id}/entities", response_model=Entity)

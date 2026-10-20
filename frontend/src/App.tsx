@@ -25,7 +25,8 @@ import {
   ArrowRight,
   Plus,
   Copy,
-  FolderOpen
+  FolderOpen,
+  Activity
 } from "lucide-react";
 
 interface Entity {
@@ -86,6 +87,18 @@ export const App: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [currentLayout, setCurrentLayout] = useState<string>("cose");
+  const [showAnalyticsModal, setShowAnalyticsModal] = useState(false);
+  const [analyticsData, setAnalyticsData] = useState<any>(null);
+
+  const fetchAnalytics = () => {
+    if (!investigationId) return;
+    fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/analytics`)
+      .then((r) => r.json())
+      .then((data) => {
+        setAnalyticsData(data);
+        setShowAnalyticsModal(true);
+      });
+  };
 
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<{
@@ -799,7 +812,109 @@ export const App: React.FC = () => {
                 <option value="concentric">Concentric</option>
               </select>
             </div>
+
+            {/* Analytics Launcher */}
+            <button
+              className="tool-btn"
+              style={{ borderLeft: "1px solid #334155", paddingLeft: "8px", color: "#38bdf8" }}
+              onClick={fetchAnalytics}
+              title="Graph Topology & Centrality Analytics"
+            >
+              <Activity size={14} /> Analytics
+            </button>
           </div>
+
+          {/* Graph Analytics Modal */}
+          {showAnalyticsModal && analyticsData && (
+            <div
+              style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: "rgba(0,0,0,0.75)",
+                zIndex: 100,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <div
+                style={{
+                  background: "#161f2d",
+                  border: "1px solid #2a3749",
+                  borderRadius: "8px",
+                  width: "520px",
+                  maxHeight: "80vh",
+                  display: "flex",
+                  flexDirection: "column",
+                  boxShadow: "0 12px 32px rgba(0,0,0,0.8)",
+                }}
+              >
+                <div style={{ padding: "16px", borderBottom: "1px solid #2a3749", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontWeight: 700, fontSize: "15px", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <Activity size={18} color="#38bdf8" /> Graph Topology Metrics
+                  </div>
+                  <button
+                    onClick={() => setShowAnalyticsModal(false)}
+                    style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "16px" }}
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px" }}>
+                    <div style={{ background: "#0f172a", padding: "12px", borderRadius: "6px", textAlign: "center", border: "1px solid #2a3749" }}>
+                      <div style={{ fontSize: "20px", fontWeight: 700, color: "#38bdf8" }}>{analyticsData.node_count}</div>
+                      <div style={{ fontSize: "11px", color: "#94a3b8", textTransform: "uppercase" }}>Nodes</div>
+                    </div>
+                    <div style={{ background: "#0f172a", padding: "12px", borderRadius: "6px", textAlign: "center", border: "1px solid #2a3749" }}>
+                      <div style={{ fontSize: "20px", fontWeight: 700, color: "#10b981" }}>{analyticsData.edge_count}</div>
+                      <div style={{ fontSize: "11px", color: "#94a3b8", textTransform: "uppercase" }}>Edges</div>
+                    </div>
+                    <div style={{ background: "#0f172a", padding: "12px", borderRadius: "6px", textAlign: "center", border: "1px solid #2a3749" }}>
+                      <div style={{ fontSize: "20px", fontWeight: 700, color: "#f59e0b" }}>{analyticsData.connected_components_count}</div>
+                      <div style={{ fontSize: "11px", color: "#94a3b8", textTransform: "uppercase" }}>Components</div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: "8px" }}>
+                    <div style={{ fontSize: "12px", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", marginBottom: "8px" }}>
+                      Top Degree Centrality Hubs
+                    </div>
+                    {analyticsData.top_hubs.length === 0 ? (
+                      <div style={{ fontSize: "12px", color: "#64748b" }}>No hubs detected in graph.</div>
+                    ) : (
+                      analyticsData.top_hubs.map((hub: any) => (
+                        <div
+                          key={hub.id}
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            background: "#0f172a",
+                            padding: "8px 12px",
+                            borderRadius: "4px",
+                            border: "1px solid #2a3749",
+                            marginBottom: "6px",
+                          }}
+                        >
+                          <div>
+                            <span style={{ fontWeight: 600, fontSize: "13px" }}>{hub.label}</span>
+                            <span style={{ fontSize: "11px", color: "#94a3b8", marginLeft: "6px" }}>({hub.type})</span>
+                          </div>
+                          <span style={{ fontSize: "12px", color: "#38bdf8", fontWeight: 700 }}>
+                            Degree: {hub.degree}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div
             id="cy-container"
