@@ -249,7 +249,8 @@ export const App: React.FC = () => {
         } else if (data.length > 0 && !investigationId) {
           setInvestigationId(data[0].id);
         }
-      });
+      })
+      .catch((err) => console.error("Error loading investigations:", err));
   };
 
   useEffect(() => {
