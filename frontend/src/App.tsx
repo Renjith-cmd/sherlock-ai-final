@@ -262,6 +262,7 @@ export const App: React.FC = () => {
   const [docTab, setDocTab] = useState<"documents" | "entities" | "matches" | "relationships">("documents");
   const [documents, setDocuments] = useState<any[]>([]);
   const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+  const [documentUploadError, setDocumentUploadError] = useState("");
   const [selectedDocText, setSelectedDocText] = useState<{ filename: string; text: string } | null>(null);
   const [intelData, setIntelData] = useState<{
     canonical_entities: any[];
@@ -311,6 +312,7 @@ export const App: React.FC = () => {
   const handleFileUpload = (files: FileList | null) => {
     if (!files || files.length === 0 || !investigationId) return;
     setIsUploadingDoc(true);
+    setDocumentUploadError("");
 
     const uploadPromises = Array.from(files).map((file) => {
       const formData = new FormData();
@@ -318,18 +320,23 @@ export const App: React.FC = () => {
       return authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/documents/upload`, {
         method: "POST",
         body: formData,
-      }).then((r) => r.json());
+      }).then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(formatAuthError(result, `Could not process ${file.name}.`));
+        return result;
+      });
     });
 
     Promise.all(uploadPromises)
-      .then(() => {
+      .then((results) => {
         setIsUploadingDoc(false);
         refreshDocumentsAndIntel(investigationId);
-        // Switch to entities tab to see extracted results immediately
-        setDocTab("entities");
+        const hasMatches = results.some((result) => (result.cross_document_matches_count || 0) > 0);
+        setDocTab(hasMatches ? "matches" : "entities");
       })
       .catch((err) => {
         console.error(err);
+        setDocumentUploadError(err instanceof Error ? err.message : "Document upload failed.");
         setIsUploadingDoc(false);
       });
   };
@@ -1747,6 +1754,11 @@ export const App: React.FC = () => {
               {/* TAB 1: Documents Upload & Management */}
               {docTab === "documents" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                  {documentUploadError && (
+                    <div role="alert" style={{ padding: "10px 12px", border: "1px solid #7f1d1d", borderRadius: "5px", background: "#2b1115", color: "#fca5a5", fontSize: "12px" }}>
+                      {documentUploadError}
+                    </div>
+                  )}
                   {/* Dropzone */}
                   <div
                     onDragOver={(e) => e.preventDefault()}
