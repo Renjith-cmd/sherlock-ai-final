@@ -6,7 +6,7 @@ from src.api.routes import router
 import src.transforms.builtin  # Registers standard DNS & network transforms
 
 app = FastAPI(
-    title="Arkana Investigator API",
+    title="Sherlock AI API",
     description="Clean-room graph-first link analysis and OSINT investigation engine",
     version="1.0.0"
 )

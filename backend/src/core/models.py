@@ -1,4 +1,4 @@
-"""Core domain models for Arkana Investigator."""
+"""Core domain models for Sherlock AI."""
 
 from datetime import datetime, timezone
 from enum import Enum
@@ -53,6 +53,7 @@ class Relationship(BaseModel):
 
 class Investigation(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: Optional[str] = None
     title: str
     description: Optional[str] = ""
     tags: List[str] = Field(default_factory=list)

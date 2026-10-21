@@ -32,8 +32,15 @@ import {
   RefreshCw,
   Eye,
   Sparkles,
-  Split
+  Split,
+  LogOut,
+  Shield,
+  Lock,
+  UserPlus
 } from "lucide-react";
+
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8080").replace(/\/$/, "");
+const apiUrl = (url: string) => url.replace("http://127.0.0.1:8080", API_BASE_URL);
 
 interface Entity {
   id: string;
@@ -81,6 +88,121 @@ interface Investigation {
 }
 
 export const App: React.FC = () => {
+  // ─── Authentication State ───────────────────────────────────────────
+  const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem("sherlock_ai_token"));
+  const [currentUser, setCurrentUser] = useState<{ id: string; username: string; email: string; full_name: string } | null>(null);
+  const [authView, setAuthView] = useState<"login" | "register">("login");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authForm, setAuthForm] = useState({ username: "", email: "", password: "", full_name: "" });
+
+  // Authenticated fetch wrapper — adds Bearer token to every request
+  const authFetch = (url: string, options: RequestInit = {}): Promise<Response> => {
+    const headers: Record<string, string> = { ...(options.headers as Record<string, string> || {}) };
+    if (authToken) {
+      headers["Authorization"] = `Bearer ${authToken}`;
+    }
+    return fetch(apiUrl(url), { ...options, headers });
+  };
+
+  // Verify token on mount
+  useEffect(() => {
+    if (!authToken) return;
+    fetch(apiUrl("http://127.0.0.1:8080/api/auth/me"), {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error("Invalid session");
+        return r.json();
+      })
+      .then((user) => setCurrentUser(user))
+      .catch(() => {
+        localStorage.removeItem("sherlock_ai_token");
+        setAuthToken(null);
+        setCurrentUser(null);
+      });
+  }, [authToken]);
+
+  const formatAuthError = (errData: any, fallback: string): string => {
+    if (!errData) return fallback;
+    if (typeof errData === "string") return errData;
+    if (typeof errData.detail === "string") return errData.detail;
+    if (Array.isArray(errData.detail)) {
+      return errData.detail.map((d: any) => d.msg || JSON.stringify(d)).join(", ");
+    }
+    if (typeof errData.message === "string") return errData.message;
+    return fallback;
+  };
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError("");
+    fetch(apiUrl("http://127.0.0.1:8080/api/auth/login"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: authForm.username, password: authForm.password }),
+    })
+      .then((r) => {
+        if (!r.ok) return r.json().then((d) => { throw new Error(formatAuthError(d, "Login failed")); });
+        return r.json();
+      })
+      .then((data) => {
+        const token = data.token || data.access_token;
+        localStorage.setItem("sherlock_ai_token", token);
+        setAuthToken(token);
+        if (data.user) {
+          setCurrentUser(data.user);
+        }
+        setAuthLoading(false);
+      })
+      .catch((err) => {
+        setAuthError(err.message);
+        setAuthLoading(false);
+      });
+  };
+
+  const handleRegister = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError("");
+    fetch(apiUrl("http://127.0.0.1:8080/api/auth/register"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: authForm.username,
+        email: authForm.email,
+        password: authForm.password,
+        full_name: authForm.full_name,
+      }),
+    })
+      .then((r) => {
+        if (!r.ok) return r.json().then((d) => { throw new Error(formatAuthError(d, "Registration failed")); });
+        return r.json();
+      })
+      .then((data) => {
+        const token = data.token || data.access_token;
+        localStorage.setItem("sherlock_ai_token", token);
+        setAuthToken(token);
+        if (data.user) {
+          setCurrentUser(data.user);
+        }
+        setAuthLoading(false);
+      })
+      .catch((err) => {
+        setAuthError(err.message);
+        setAuthLoading(false);
+      });
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("sherlock_ai_token");
+    setAuthToken(null);
+    setCurrentUser(null);
+    setAuthForm({ username: "", email: "", password: "", full_name: "" });
+  };
+
+  // ─── App State ──────────────────────────────────────────────────────
   const [investigationId, setInvestigationId] = useState<string>("");
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [showCaseModal, setShowCaseModal] = useState(false);
@@ -114,12 +236,12 @@ export const App: React.FC = () => {
   // Load documents & intelligence for current investigation
   const refreshDocumentsAndIntel = (invId: string) => {
     if (!invId) return;
-    fetch(`http://127.0.0.1:8080/api/investigations/${invId}/documents`)
+    authFetch(`http://127.0.0.1:8080/api/investigations/${invId}/documents`)
       .then((r) => r.json())
       .then((data) => setDocuments(Array.isArray(data) ? data : []))
       .catch(console.error);
 
-    fetch(`http://127.0.0.1:8080/api/investigations/${invId}/intelligence`)
+    authFetch(`http://127.0.0.1:8080/api/investigations/${invId}/intelligence`)
       .then((r) => r.json())
       .then((data) => {
         const canonical = Array.isArray(data.entities) ? data.entities : (Array.isArray(data.canonical_entities) ? data.canonical_entities : []);
@@ -154,7 +276,7 @@ export const App: React.FC = () => {
     const uploadPromises = Array.from(files).map((file) => {
       const formData = new FormData();
       formData.append("file", file);
-      return fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/documents/upload`, {
+      return authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/documents/upload`, {
         method: "POST",
         body: formData,
       }).then((r) => r.json());
@@ -175,7 +297,7 @@ export const App: React.FC = () => {
 
   const handleReprocessDoc = (docId: string) => {
     if (!investigationId) return;
-    fetch(`http://127.0.0.1:8080/api/documents/${docId}/reprocess`, { method: "POST" })
+    authFetch(`http://127.0.0.1:8080/api/documents/${docId}/reprocess`, { method: "POST" })
       .then((r) => r.json())
       .then(() => {
         refreshDocumentsAndIntel(investigationId);
@@ -184,7 +306,7 @@ export const App: React.FC = () => {
 
   const handleDeleteDoc = (docId: string) => {
     if (!investigationId || !window.confirm("Delete this document and all associated extractions?")) return;
-    fetch(`http://127.0.0.1:8080/api/documents/${docId}`, { method: "DELETE" })
+    authFetch(`http://127.0.0.1:8080/api/documents/${docId}`, { method: "DELETE" })
       .then((r) => r.json())
       .then(() => {
         refreshDocumentsAndIntel(investigationId);
@@ -196,7 +318,7 @@ export const App: React.FC = () => {
     const chosenEntities = selectedEntityIndices.map((idx) => intelData.canonical_entities[idx]);
     const chosenRels = selectedRelIndices.map((idx) => intelData.relationships[idx]);
 
-    fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/intelligence/build-graph`, {
+    authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/intelligence/build-graph`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -217,7 +339,7 @@ export const App: React.FC = () => {
 
   const fetchAnalytics = () => {
     if (!investigationId) return;
-    fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/analytics`)
+    authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/analytics`)
       .then((r) => r.json())
       .then((data) => {
         setAnalyticsData(data);
@@ -240,37 +362,48 @@ export const App: React.FC = () => {
 
   // Load investigations list
   const refreshInvestigations = (selectId?: string) => {
-    fetch("http://127.0.0.1:8080/api/investigations")
+    if (!authToken) return;
+    authFetch("http://127.0.0.1:8080/api/investigations")
       .then((res) => res.json())
       .then((data) => {
-        setInvestigations(data);
+        const list = Array.isArray(data) ? data : [];
+        setInvestigations(list);
         if (selectId) {
           setInvestigationId(selectId);
-        } else if (data.length > 0 && !investigationId) {
-          setInvestigationId(data[0].id);
+        } else if (list.length > 0 && !investigationId) {
+          setInvestigationId(list[0].id);
         }
       })
       .catch((err) => console.error("Error loading investigations:", err));
   };
 
   useEffect(() => {
-    refreshInvestigations();
-  }, []);
+    if (authToken && currentUser) {
+      refreshInvestigations();
+    }
+  }, [authToken, currentUser]);
 
   // Fetch transforms
   useEffect(() => {
-    fetch("http://127.0.0.1:8080/api/transforms")
-      .then((res) => res.json())
-      .then((data) => setTransforms(data))
-      .catch(console.error);
-  }, []);
+    if (authToken && currentUser) {
+      authFetch("http://127.0.0.1:8080/api/transforms")
+        .then((res) => res.json())
+        .then((data) => setTransforms(Array.isArray(data) ? data : []))
+        .catch(console.error);
+    }
+  }, [authToken, currentUser]);
 
   // Cytoscape initialization
   useEffect(() => {
+    if (!authToken || !currentUser) return;
     if (!cyRef.current) return;
 
     cyInstance.current = cytoscape({
       container: cyRef.current,
+      minZoom: 0.25,
+      maxZoom: 3.0,
+      wheelSensitivity: 0.2,
+      boxSelectionEnabled: true,
       style: [
         {
           selector: "node",
@@ -417,44 +550,137 @@ export const App: React.FC = () => {
       }
     });
 
+    if (investigationId) {
+      loadGraph(investigationId);
+    }
+
     return () => {
       if (cyInstance.current) {
         cyInstance.current.destroy();
+        cyInstance.current = null;
       }
     };
-  }, []);
+  }, [authToken, currentUser]);
 
   // Load Graph elements
   const loadGraph = (invId: string, layoutName: string = currentLayout) => {
     if (!invId || !cyInstance.current) return;
-    fetch(`http://127.0.0.1:8080/api/investigations/${invId}/graph`)
+    authFetch(`http://127.0.0.1:8080/api/investigations/${invId}/graph`)
       .then((res) => res.json())
       .then((data) => {
-        const cy = cyInstance.current!;
+        if (!cyInstance.current) return;
+        const cy = cyInstance.current;
         cy.elements().remove();
 
-        data.nodes.forEach((n: Entity) => {
+        const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+        const edges = Array.isArray(data?.edges) ? data.edges : [];
+
+        nodes.forEach((n: Entity) => {
           cy.add({
             group: "nodes",
             data: { id: n.id, label: n.label, type: n.type, entity: n },
           });
         });
 
-        data.edges.forEach((e: Relationship) => {
+        edges.forEach((e: Relationship) => {
           cy.add({
             group: "edges",
             data: { id: e.id, source: e.source_id, target: e.target_id, label: e.type },
           });
         });
 
-        applyLayout(layoutName);
-      });
+        if (nodes.length > 0) {
+          applyLayout(layoutName);
+        }
+      })
+      .catch((err) => console.error("Error loading graph:", err));
   };
 
   const applyLayout = (name: string) => {
     if (!cyInstance.current) return;
     setCurrentLayout(name);
-    cyInstance.current.layout({ name, animate: true } as any).run();
+    const cy = cyInstance.current;
+
+    const totalNodes = cy.nodes().length;
+    if (totalNodes === 0) return;
+
+    // For single or 2 nodes, center comfortably without extreme zoom
+    if (totalNodes <= 2) {
+      const singleLayout = cy.layout({
+        name: "grid",
+        rows: 1,
+        cols: Math.max(totalNodes, 1),
+        avoidOverlap: true,
+        padding: 100,
+        fit: false,
+      });
+      singleLayout.run();
+      cy.center();
+      cy.zoom(1.0);
+      return;
+    }
+
+    let layoutOpts: any = {
+      name,
+      animate: true,
+      animationDuration: 400,
+      fit: true,
+      padding: 60,
+    };
+
+    if (name === "cose") {
+      layoutOpts = {
+        ...layoutOpts,
+        nodeRepulsion: () => 45000,
+        nodeOverlap: 60,
+        idealEdgeLength: () => 140,
+        edgeElasticity: () => 100,
+        nestingFactor: 5,
+        gravity: 0.15,
+        numIter: 1000,
+        initialTemp: 300,
+        coolingFactor: 0.95,
+        minTemp: 1.0,
+      };
+    } else if (name === "concentric") {
+      layoutOpts = {
+        ...layoutOpts,
+        minNodeSpacing: 100,
+        concentric: (node: any) => node.degree(),
+        levelWidth: () => 2,
+      };
+    } else if (name === "breadthfirst") {
+      layoutOpts = {
+        ...layoutOpts,
+        directed: false,
+        spacingFactor: 2.0,
+      };
+    } else if (name === "circle") {
+      layoutOpts = {
+        ...layoutOpts,
+        spacingFactor: 1.8,
+      };
+    } else if (name === "grid") {
+      layoutOpts = {
+        ...layoutOpts,
+        spacingFactor: 2.0,
+        avoidOverlap: true,
+      };
+    }
+
+    const layout = cy.layout(layoutOpts);
+    layout.one("layoutstop", () => {
+      // Clamp zoom to comfortable viewing range: between 0.65 and 1.3
+      const currentZ = cy.zoom();
+      if (currentZ < 0.65) {
+        cy.zoom(0.65);
+        cy.center();
+      } else if (currentZ > 1.3) {
+        cy.zoom(1.1);
+        cy.center();
+      }
+    });
+    layout.run();
   };
 
   useEffect(() => {
@@ -494,7 +720,7 @@ export const App: React.FC = () => {
     const label = window.prompt(`Enter ${type} value:`, defaultLabel);
     if (!label || !investigationId) return;
 
-    fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/entities`, {
+    authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/entities`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type, label, properties: {} }),
@@ -516,7 +742,7 @@ export const App: React.FC = () => {
   const handleCreateInvestigation = () => {
     const title = window.prompt("New Investigation Title:", "Operation New Horizon");
     if (!title) return;
-    fetch("http://127.0.0.1:8080/api/investigations", {
+    authFetch("http://127.0.0.1:8080/api/investigations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title, description: "Active OSINT Workspace" }),
@@ -533,7 +759,7 @@ export const App: React.FC = () => {
     const newTitle = window.prompt("Duplicate Investigation As:", target ? `${target.title} (Clone)` : "Investigation Copy");
     if (!newTitle) return;
 
-    fetch(`http://127.0.0.1:8080/api/investigations/${idToDup}/duplicate`, {
+    authFetch(`http://127.0.0.1:8080/api/investigations/${idToDup}/duplicate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: newTitle }),
@@ -547,7 +773,7 @@ export const App: React.FC = () => {
 
   const handleDeleteInvestigation = (idToDel: string) => {
     if (!window.confirm("Are you sure you want to permanently delete this investigation and its entire graph?")) return;
-    fetch(`http://127.0.0.1:8080/api/investigations/${idToDel}`, { method: "DELETE" })
+    authFetch(`http://127.0.0.1:8080/api/investigations/${idToDel}`, { method: "DELETE" })
       .then((r) => r.json())
       .then(() => {
         const remaining = investigations.filter((i) => i.id !== idToDel);
@@ -561,7 +787,7 @@ export const App: React.FC = () => {
   // Delete Entity
   const handleDeleteEntity = (entityId: string) => {
     if (!window.confirm("Are you sure you want to delete this entity from the investigation?")) return;
-    fetch(`http://127.0.0.1:8080/api/entities/${entityId}`, { method: "DELETE" })
+    authFetch(`http://127.0.0.1:8080/api/entities/${entityId}`, { method: "DELETE" })
       .then((res) => res.json())
       .then(() => {
         cyInstance.current?.$(`#${entityId}`).remove();
@@ -573,7 +799,7 @@ export const App: React.FC = () => {
   // Delete Edge
   const handleDeleteEdge = (edgeId: string) => {
     if (!window.confirm("Delete relationship link?")) return;
-    fetch(`http://127.0.0.1:8080/api/relationships/${edgeId}`, { method: "DELETE" })
+    authFetch(`http://127.0.0.1:8080/api/relationships/${edgeId}`, { method: "DELETE" })
       .then((res) => res.json())
       .then(() => {
         cyInstance.current?.$(`#${edgeId}`).remove();
@@ -586,7 +812,7 @@ export const App: React.FC = () => {
     const newLabel = window.prompt("Edit entity label:", entity.label);
     if (!newLabel || newLabel === entity.label) return;
 
-    fetch(`http://127.0.0.1:8080/api/entities/${entity.id}`, {
+    authFetch(`http://127.0.0.1:8080/api/entities/${entity.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ label: newLabel }),
@@ -617,7 +843,7 @@ export const App: React.FC = () => {
 
     const relType = window.prompt("Enter relationship label:", "CONNECTED_TO") || "CONNECTED_TO";
 
-    fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/relationships`, {
+    authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/relationships`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -641,7 +867,7 @@ export const App: React.FC = () => {
     if (!selectedEntity || !investigationId) return;
     setIsRunningTransform(true);
     setContextMenu(null);
-    fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/transforms/execute`, {
+    authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/transforms/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transform_id: tId, entity_id: selectedEntity.id }),
@@ -660,7 +886,7 @@ export const App: React.FC = () => {
   // Commit Candidates to Graph
   const handleMergeCandidates = () => {
     if (!selectedEntity || !investigationId || candidates.length === 0) return;
-    fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/transforms/merge`, {
+    authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/transforms/merge`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ entity_id: selectedEntity.id, candidates }),
@@ -672,14 +898,291 @@ export const App: React.FC = () => {
       });
   };
 
-  const activeInv = investigations.find((i) => i.id === investigationId);
+  const activeInv = Array.isArray(investigations) ? investigations.find((i) => i.id === investigationId) : undefined;
 
+  // ─── AUTH GATE: Show Login/Register if not authenticated ────────────
+  if (!authToken || !currentUser) {
+    return (
+      <div style={{
+        minHeight: "100vh",
+        width: "100vw",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "linear-gradient(135deg, #0a0f1a 0%, #0f172a 30%, #1a1040 70%, #0f172a 100%)",
+        fontFamily: "var(--font-family)",
+        position: "relative",
+        overflow: "hidden",
+      }}>
+        {/* Animated background grid */}
+        <div style={{
+          position: "absolute", inset: 0,
+          backgroundImage: "radial-gradient(circle at 1px 1px, rgba(59,130,246,0.08) 1px, transparent 0)",
+          backgroundSize: "32px 32px",
+          animation: "pulse 4s ease-in-out infinite",
+        }} />
+
+        {/* Glow orbs */}
+        <div style={{
+          position: "absolute", top: "15%", left: "20%", width: 320, height: 320,
+          borderRadius: "50%", background: "radial-gradient(circle, rgba(59,130,246,0.12), transparent 70%)",
+          filter: "blur(60px)", pointerEvents: "none",
+        }} />
+        <div style={{
+          position: "absolute", bottom: "15%", right: "15%", width: 280, height: 280,
+          borderRadius: "50%", background: "radial-gradient(circle, rgba(139,92,246,0.1), transparent 70%)",
+          filter: "blur(60px)", pointerEvents: "none",
+        }} />
+
+        <div style={{
+          position: "relative", zIndex: 1,
+          width: 420,
+          background: "rgba(22,31,45,0.85)",
+          backdropFilter: "blur(24px)",
+          border: "1px solid rgba(59,130,246,0.2)",
+          borderRadius: 16,
+          padding: "40px 36px",
+          boxShadow: "0 24px 64px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.05)",
+        }}>
+          {/* Logo & Title */}
+          <div style={{ textAlign: "center", marginBottom: 32 }}>
+            <div style={{
+              width: 56, height: 56, borderRadius: "50%",
+              background: "linear-gradient(135deg, #3b82f6, #8b5cf6)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              margin: "0 auto 16px",
+              boxShadow: "0 8px 24px rgba(59,130,246,0.3)",
+            }}>
+              <Shield size={28} color="#fff" />
+            </div>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: "#f1f5f9", margin: 0, letterSpacing: "0.5px" }}>
+              SHERLOCK AI
+            </h1>
+            <p style={{ fontSize: 13, color: "#64748b", marginTop: 6 }}>
+              Intelligence-grade investigation platform
+            </p>
+          </div>
+
+          {/* Tab Switcher */}
+          <div style={{ display: "flex", marginBottom: 24, background: "#0f172a", borderRadius: 8, padding: 3 }}>
+            <button
+              onClick={() => { setAuthView("login"); setAuthError(""); }}
+              style={{
+                flex: 1, padding: "10px 0", border: "none", borderRadius: 6, cursor: "pointer",
+                fontSize: 13, fontWeight: 600, transition: "all 0.2s",
+                background: authView === "login" ? "linear-gradient(135deg, #3b82f6, #2563eb)" : "transparent",
+                color: authView === "login" ? "#fff" : "#64748b",
+              }}
+            >
+              <Lock size={14} style={{ marginRight: 6, verticalAlign: "middle" }} />
+              Sign In
+            </button>
+            <button
+              onClick={() => { setAuthView("register"); setAuthError(""); }}
+              style={{
+                flex: 1, padding: "10px 0", border: "none", borderRadius: 6, cursor: "pointer",
+                fontSize: 13, fontWeight: 600, transition: "all 0.2s",
+                background: authView === "register" ? "linear-gradient(135deg, #8b5cf6, #6d28d9)" : "transparent",
+                color: authView === "register" ? "#fff" : "#64748b",
+              }}
+            >
+              <UserPlus size={14} style={{ marginRight: 6, verticalAlign: "middle" }} />
+              Register
+            </button>
+          </div>
+
+          {/* Error Alert */}
+          {authError && (
+            <div style={{
+              background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
+              borderRadius: 8, padding: "10px 14px", marginBottom: 16,
+              color: "#fca5a5", fontSize: 13, display: "flex", alignItems: "center", gap: 8,
+            }}>
+              <XCircle size={16} /> {authError}
+            </div>
+          )}
+
+          {/* Login Form */}
+          {authView === "login" ? (
+            <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.5px", display: "block", marginBottom: 6 }}>
+                  Username
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoComplete="username"
+                  value={authForm.username}
+                  onChange={(e) => setAuthForm({ ...authForm, username: e.target.value })}
+                  placeholder="analyst_username"
+                  style={{
+                    width: "100%", padding: "12px 14px", background: "#0f172a",
+                    border: "1px solid #2a3749", borderRadius: 8, color: "#f1f5f9",
+                    fontSize: 14, outline: "none", transition: "border-color 0.2s",
+                    boxSizing: "border-box",
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = "#3b82f6"}
+                  onBlur={(e) => e.target.style.borderColor = "#2a3749"}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.5px", display: "block", marginBottom: 6 }}>
+                  Password
+                </label>
+                <input
+                  type="password"
+                  required
+                  autoComplete="current-password"
+                  value={authForm.password}
+                  onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+                  placeholder="••••••••••"
+                  style={{
+                    width: "100%", padding: "12px 14px", background: "#0f172a",
+                    border: "1px solid #2a3749", borderRadius: 8, color: "#f1f5f9",
+                    fontSize: 14, outline: "none", transition: "border-color 0.2s",
+                    boxSizing: "border-box",
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = "#3b82f6"}
+                  onBlur={(e) => e.target.style.borderColor = "#2a3749"}
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={authLoading}
+                style={{
+                  padding: "14px", border: "none", borderRadius: 8, cursor: "pointer",
+                  fontSize: 14, fontWeight: 700, color: "#fff", marginTop: 8,
+                  background: authLoading ? "#374151" : "linear-gradient(135deg, #3b82f6, #2563eb)",
+                  boxShadow: authLoading ? "none" : "0 4px 16px rgba(59,130,246,0.3)",
+                  transition: "all 0.2s", letterSpacing: "0.3px",
+                }}
+              >
+                {authLoading ? "Authenticating..." : "Sign In to Workspace"}
+              </button>
+            </form>
+          ) : (
+            /* Register Form */
+            <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.5px", display: "block", marginBottom: 6 }}>
+                  Full Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={authForm.full_name}
+                  onChange={(e) => setAuthForm({ ...authForm, full_name: e.target.value })}
+                  placeholder="Senior Intelligence Analyst"
+                  style={{
+                    width: "100%", padding: "11px 14px", background: "#0f172a",
+                    border: "1px solid #2a3749", borderRadius: 8, color: "#f1f5f9",
+                    fontSize: 13, outline: "none", transition: "border-color 0.2s",
+                    boxSizing: "border-box",
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = "#8b5cf6"}
+                  onBlur={(e) => e.target.style.borderColor = "#2a3749"}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.5px", display: "block", marginBottom: 6 }}>
+                  Username
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoComplete="username"
+                  value={authForm.username}
+                  onChange={(e) => setAuthForm({ ...authForm, username: e.target.value })}
+                  placeholder="analyst_call_sign"
+                  style={{
+                    width: "100%", padding: "11px 14px", background: "#0f172a",
+                    border: "1px solid #2a3749", borderRadius: 8, color: "#f1f5f9",
+                    fontSize: 13, outline: "none", transition: "border-color 0.2s",
+                    boxSizing: "border-box",
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = "#8b5cf6"}
+                  onBlur={(e) => e.target.style.borderColor = "#2a3749"}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.5px", display: "block", marginBottom: 6 }}>
+                  Email
+                </label>
+                <input
+                  type="email"
+                  required
+                  autoComplete="email"
+                  value={authForm.email}
+                  onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })}
+                  placeholder="analyst@agency.gov"
+                  style={{
+                    width: "100%", padding: "11px 14px", background: "#0f172a",
+                    border: "1px solid #2a3749", borderRadius: 8, color: "#f1f5f9",
+                    fontSize: 13, outline: "none", transition: "border-color 0.2s",
+                    boxSizing: "border-box",
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = "#8b5cf6"}
+                  onBlur={(e) => e.target.style.borderColor = "#2a3749"}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.5px", display: "block", marginBottom: 6 }}>
+                  Password
+                </label>
+                <input
+                  type="password"
+                  required
+                  autoComplete="new-password"
+                  minLength={8}
+                  value={authForm.password}
+                  onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+                  placeholder="Min 8 characters, 1 uppercase, 1 digit"
+                  style={{
+                    width: "100%", padding: "11px 14px", background: "#0f172a",
+                    border: "1px solid #2a3749", borderRadius: 8, color: "#f1f5f9",
+                    fontSize: 13, outline: "none", transition: "border-color 0.2s",
+                    boxSizing: "border-box",
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = "#8b5cf6"}
+                  onBlur={(e) => e.target.style.borderColor = "#2a3749"}
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={authLoading}
+                style={{
+                  padding: "13px", border: "none", borderRadius: 8, cursor: "pointer",
+                  fontSize: 14, fontWeight: 700, color: "#fff", marginTop: 6,
+                  background: authLoading ? "#374151" : "linear-gradient(135deg, #8b5cf6, #6d28d9)",
+                  boxShadow: authLoading ? "none" : "0 4px 16px rgba(139,92,246,0.3)",
+                  transition: "all 0.2s", letterSpacing: "0.3px",
+                }}
+              >
+                {authLoading ? "Creating Account..." : "Create Analyst Account"}
+              </button>
+            </form>
+          )}
+
+          {/* Security Badge */}
+          <div style={{
+            marginTop: 24, textAlign: "center", fontSize: 11, color: "#475569",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+          }}>
+            <Lock size={10} /> Argon2id + JWT · End-to-end encrypted sessions
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── MAIN APP (Authenticated) ──────────────────────────────────────
   return (
     <>
       <header className="app-header">
         <div className="brand-badge">
           <Compass className="brand-icon" size={22} />
-          <span>ARKANA INVESTIGATOR</span>
+          <span>SHERLOCK AI</span>
         </div>
 
         {/* Search & Filter Bar */}
@@ -721,7 +1224,7 @@ export const App: React.FC = () => {
             title="Export Graph to JSON"
             onClick={() => {
               if (investigationId) {
-                window.open(`http://127.0.0.1:8080/api/investigations/${investigationId}/export/json`, "_blank");
+                window.open(apiUrl(`http://127.0.0.1:8080/api/investigations/${investigationId}/export/json`), "_blank");
               }
             }}
           >
@@ -733,7 +1236,7 @@ export const App: React.FC = () => {
             title="Generate Forensic Report"
             onClick={() => {
               if (investigationId) {
-                window.open(`http://127.0.0.1:8080/api/investigations/${investigationId}/report`, "_blank");
+                window.open(apiUrl(`http://127.0.0.1:8080/api/investigations/${investigationId}/report`), "_blank");
               }
             }}
           >
@@ -763,6 +1266,29 @@ export const App: React.FC = () => {
           >
             <Plus size={14} /> New Case
           </button>
+
+          {/* User Badge & Logout */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 8, paddingLeft: 12, borderLeft: "1px solid #2a3749" }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: "50%",
+              background: "linear-gradient(135deg, #3b82f6, #8b5cf6)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 12, fontWeight: 700, color: "#fff",
+            }}>
+              {currentUser?.username?.charAt(0)?.toUpperCase() || "U"}
+            </div>
+            <span style={{ fontSize: 12, color: "#94a3b8", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {currentUser?.username || "user"}
+            </span>
+            <button
+              className="tool-btn"
+              title="Sign Out"
+              onClick={handleLogout}
+              style={{ padding: "4px 8px", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", color: "#fca5a5" }}
+            >
+              <LogOut size={13} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1059,7 +1585,7 @@ export const App: React.FC = () => {
                               style={{ background: "#1e293b", border: "1px solid #334155" }}
                               title="View Extracted Text"
                               onClick={() => {
-                                fetch(`http://127.0.0.1:8080/api/documents/${d.id}`)
+                                authFetch(`http://127.0.0.1:8080/api/documents/${d.id}`)
                                   .then((r) => r.json())
                                   .then((data) => setSelectedDocText({ filename: d.filename, text: data.extracted_text || "(No text)" }));
                               }}
@@ -1250,9 +1776,13 @@ export const App: React.FC = () => {
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                             <div>
-                              <span style={{ fontWeight: 700, fontSize: "13px", color: "#38bdf8" }}>{mc.entity1_label}</span>
+                              <span style={{ fontWeight: 700, fontSize: "13px", color: "#38bdf8" }}>
+                                {mc.entity1_label || mc.entity_a?.label || "Entity A"}
+                              </span>
                               <span style={{ margin: "0 8px", color: "#94a3b8" }}>⟷</span>
-                              <span style={{ fontWeight: 700, fontSize: "13px", color: "#38bdf8" }}>{mc.entity2_label}</span>
+                              <span style={{ fontWeight: 700, fontSize: "13px", color: "#38bdf8" }}>
+                                {mc.entity2_label || mc.entity_b?.label || "Entity B"}
+                              </span>
                               <span style={{ fontSize: "11px", color: "#94a3b8", marginLeft: "6px" }}>({mc.type})</span>
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -1260,18 +1790,18 @@ export const App: React.FC = () => {
                                 style={{
                                   fontSize: "11px",
                                   fontWeight: 600,
-                                  background: mc.score >= 0.85 ? "#064e3b" : "#78350f",
-                                  color: mc.score >= 0.85 ? "#34d399" : "#fbbf24",
+                                  background: (mc.score ?? mc.match_score ?? 0) >= 0.85 ? "#064e3b" : "#78350f",
+                                  color: (mc.score ?? mc.match_score ?? 0) >= 0.85 ? "#34d399" : "#fbbf24",
                                   padding: "2px 8px",
                                   borderRadius: "4px",
                                 }}
                               >
-                                {mc.suggested_action.replace("_", " ").toUpperCase()} ({(mc.score * 100).toFixed(0)}%)
+                                {(mc.suggested_action || mc.suggestion || "possible_match").replace("_", " ").toUpperCase()} ({(((mc.score ?? mc.match_score ?? 0)) * 100).toFixed(0)}%)
                               </span>
                             </div>
                           </div>
                           <div style={{ fontSize: "11px", color: "#cbd5e1" }}>
-                            <b>Evidence:</b> {mc.evidence}
+                            <b>Evidence:</b> {mc.evidence || (Array.isArray(mc.supporting_evidence) ? mc.supporting_evidence.join("; ") : "Cross-document pattern match")}
                           </div>
                         </div>
                       ))}
@@ -1642,6 +2172,37 @@ export const App: React.FC = () => {
             }}
           />
 
+          {/* Empty Case or No Active Case Guidance Overlay */}
+          {!investigationId ? (
+            <div style={{
+              position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+              textAlign: "center", pointerEvents: "none", zIndex: 2,
+            }}>
+              <div style={{
+                width: 64, height: 64, borderRadius: "50%", background: "rgba(59,130,246,0.1)",
+                display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px",
+                border: "1px solid rgba(59,130,246,0.2)",
+              }}>
+                <FolderOpen size={32} color="#38bdf8" />
+              </div>
+              <h3 style={{ fontSize: 16, fontWeight: 700, color: "#f1f5f9", marginBottom: 6 }}>No Active Investigation</h3>
+              <p style={{ fontSize: 13, color: "#64748b", maxWidth: 320, lineHeight: 1.5, margin: "0 auto 16px" }}>
+                Select an existing investigation from Cases or create a new case to begin mapping entities.
+              </p>
+              <button
+                onClick={handleCreateInvestigation}
+                style={{
+                  pointerEvents: "auto", background: "linear-gradient(135deg, #059669, #047857)",
+                  border: "none", borderRadius: 6, color: "#fff", padding: "8px 16px",
+                  fontSize: 13, fontWeight: 600, cursor: "pointer", display: "inline-flex",
+                  alignItems: "center", gap: 6,
+                }}
+              >
+                <Plus size={14} /> Create New Case
+              </button>
+            </div>
+          ) : null}
+
           {/* Context Menu Popup */}
           {contextMenu && (
             <div
@@ -1790,7 +2351,7 @@ export const App: React.FC = () => {
                       const sourceId = window.prompt("Source identifier (e.g. CERT Advisory, Log entry):", "Analyst Note");
                       if (!sourceId) return;
                       const notes = window.prompt("Notes or evidence quote:", "Verified by human analyst");
-                      fetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/entities/${selectedEntity.id}/evidence`, {
+                      authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/entities/${selectedEntity.id}/evidence`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ source_identifier: sourceId, user_notes: notes }),

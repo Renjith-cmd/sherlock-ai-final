@@ -43,6 +43,7 @@ coverage/
 *.sqlite3
 data/*.db
 data/*.sqlite
+backend/data/
 
 # Environment & Secrets
 .env

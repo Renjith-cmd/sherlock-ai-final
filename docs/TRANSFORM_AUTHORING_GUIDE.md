@@ -1,7 +1,7 @@
-# Arkana Investigator: Extensibility & Transform Authoring Guide
+# Sherlock AI: Extensibility & Transform Authoring Guide
 
 ## Overview
-Arkana Investigator provides an asynchronous, modular transformation architecture designed for deterministic graph pivoting and evidence discovery.
+Sherlock AI provides an asynchronous, modular transformation architecture designed for deterministic graph pivoting and evidence discovery.
 
 ---
 
@@ -65,7 +65,7 @@ registry.register(MyCustomLookupTransform())
 ---
 
 ## 3. Provenance & Chain of Custody
-Every transform result candidate must specify an `evidence` dictionary. When committed to the active graph, Arkana automatically pins immutable provenance records containing:
+Every transform result candidate must specify an `evidence` dictionary. When committed to the active graph, Sherlock AI automatically pins immutable provenance records containing:
 - Origin tool / API identifier.
 - Timestamp in ISO 8601 UTC.
 - Analyst or automated acquisition method.

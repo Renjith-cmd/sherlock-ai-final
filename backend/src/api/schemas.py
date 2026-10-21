@@ -23,6 +23,7 @@ class CreateRelationshipRequest(BaseModel):
     target_id: str
     type: str = "ASSOCIATED_WITH"
     properties: Dict[str, Any] = Field(default_factory=dict)
+    provenance: Optional[Provenance] = None
 
 
 class ExecuteTransformRequest(BaseModel):

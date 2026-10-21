@@ -1,12 +1,30 @@
-"""FastAPI REST routes for investigations, entities, graphs, and transforms."""
+"""FastAPI REST routes for user authentication, investigations, entities, graphs, and transforms."""
 
-from fastapi import APIRouter, HTTPException, Depends
+import os
+import hashlib
+from fastapi import APIRouter, HTTPException, Depends, Request, Response, status, UploadFile, File
+from fastapi.responses import PlainTextResponse
 from typing import List, Dict, Any, Optional, Tuple
 from pydantic import BaseModel
+
 from src.core.models import Investigation, Entity, EntityType, Relationship, Provenance, TransformResultCandidate
 from src.core.validation import normalize_and_validate_entity, ValidationError
 from src.core.database import DatabaseRepository
 from src.core.transforms import registry, TransformMetadata
+from src.core.export_service import ExportService
+from src.core.graph_analysis import GraphAnalyzer
+from src.core.security import get_system_diagnostics
+from src.core.auth_security import (
+    User,
+    hash_password,
+    verify_password,
+    create_access_token,
+    normalize_email,
+    validate_username,
+    check_login_rate_limit,
+    record_failed_attempt,
+    clear_failed_attempts
+)
 from src.api.schemas import (
     CreateInvestigationRequest,
     CreateEntityRequest,
@@ -14,18 +32,28 @@ from src.api.schemas import (
     ExecuteTransformRequest,
     MergeCandidatesRequest,
 )
+from src.api.auth_schemas import RegisterRequest, LoginRequest, AuthResponse
+from src.api.auth_dependencies import (
+    get_current_user,
+    get_owned_investigation,
+    get_owned_entity,
+    get_owned_relationship,
+    get_owned_document
+)
 
 router = APIRouter()
 repo = DatabaseRepository()
 
 
-from src.core.security import get_system_diagnostics
+# =========================================================================
+# PUBLIC & DIAGNOSTIC ENDPOINTS
+# =========================================================================
 
 @router.get("/health")
 def health_check():
     return {
         "status": "healthy",
-        "service": "arkana-investigator",
+        "service": "sherlock-ai",
         "transforms_loaded": len(registry.list_transforms())
     }
 
@@ -35,139 +63,269 @@ def system_diagnostics():
     return get_system_diagnostics()
 
 
+# =========================================================================
+# AUTHENTICATION ENDPOINTS
+# =========================================================================
 
-# --- Investigations ---
+@router.post("/auth/register", response_model=AuthResponse)
+def register(req: RegisterRequest, response: Response):
+    # 1. Validate username format
+    if not validate_username(req.username):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username must be 3-30 characters long and contain only letters, numbers, underscores, or hyphens."
+        )
+
+    # 2. Normalize and validate email
+    clean_email = normalize_email(req.email)
+    if "@" not in clean_email or "." not in clean_email.split("@")[-1]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email format."
+        )
+
+    # 3. Check for existing username or email
+    existing_user = repo.get_user_by_username_or_email(req.username)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username is already registered."
+        )
+    existing_email = repo.get_user_by_username_or_email(clean_email)
+    if existing_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email address is already registered."
+        )
+
+    # 4. Hash password with Argon2id
+    pw_hash = hash_password(req.password)
+    new_user = User(
+        username=req.username.strip(),
+        email=clean_email,
+        full_name=(req.full_name or "").strip()
+    )
+    created_user = repo.create_user(new_user, pw_hash)
+
+    # 5. Generate JWT token & set HttpOnly cookie
+    token = create_access_token(created_user)
+    response.set_cookie(
+        key="sherlock_ai_session",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,  # Set to True in HTTPS/Production
+        max_age=86400
+    )
+
+    return AuthResponse(user=created_user, token=token)
+
+
+@router.post("/auth/login", response_model=AuthResponse)
+def login(req: LoginRequest, request: Request, response: Response):
+    client_ip = request.client.host if request.client else "unknown"
+    rate_limit_key = f"{client_ip}:{req.identifier.lower().strip()}"
+
+    # Rate limiting protection
+    if not check_login_rate_limit(rate_limit_key, max_attempts=5, window_seconds=60):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Please wait 60 seconds before retrying."
+        )
+
+    # Lookup user by username or email
+    user_db = repo.get_user_by_username_or_email(req.identifier)
+    if not user_db or not verify_password(req.password, user_db.password_hash):
+        record_failed_attempt(rate_limit_key)
+        # Generic error message to prevent enumeration
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password."
+        )
+
+    if not user_db.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is deactivated."
+        )
+
+    clear_failed_attempts(rate_limit_key)
+
+    current_user = User(
+        id=user_db.id,
+        username=user_db.username,
+        email=user_db.email,
+        full_name=user_db.full_name,
+        is_active=user_db.is_active,
+        created_at=user_db.created_at
+    )
+    token = create_access_token(current_user)
+    response.set_cookie(
+        key="sherlock_ai_session",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=86400
+    )
+
+    return AuthResponse(user=current_user, token=token)
+
+
+@router.get("/auth/me", response_model=User)
+def get_authenticated_user_profile(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+@router.post("/auth/logout")
+def logout(response: Response):
+    response.delete_cookie(key="sherlock_ai_session")
+    return {"status": "logged_out", "detail": "Session successfully terminated"}
+
+
+# =========================================================================
+# STRICTLY SCOPED INVESTIGATION ENDPOINTS
+# =========================================================================
 
 @router.post("/investigations", response_model=Investigation)
-def create_investigation(req: CreateInvestigationRequest):
-    inv = Investigation(title=req.title, description=req.description, tags=req.tags)
+def create_investigation(
+    req: CreateInvestigationRequest,
+    current_user: User = Depends(get_current_user)
+):
+    inv = Investigation(
+        user_id=current_user.id,
+        title=req.title,
+        description=req.description,
+        tags=req.tags
+    )
     return repo.create_investigation(inv)
 
 
 @router.get("/investigations", response_model=List[Investigation])
-def list_investigations():
-    return repo.list_investigations()
+def list_investigations(current_user: User = Depends(get_current_user)):
+    # Strictly return only investigations owned by the current user
+    return repo.list_investigations(user_id=current_user.id)
 
 
 @router.get("/investigations/{inv_id}", response_model=Investigation)
-def get_investigation(inv_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
+def get_investigation(inv: Investigation = Depends(get_owned_investigation)):
     return inv
 
 
 @router.patch("/investigations/{inv_id}", response_model=Investigation)
-def update_investigation(inv_id: str, payload: Dict[str, Any]):
+def update_investigation(
+    payload: Dict[str, Any],
+    inv: Investigation = Depends(get_owned_investigation),
+    current_user: User = Depends(get_current_user)
+):
     title = payload.get("title")
     description = payload.get("description")
     tags = payload.get("tags")
-    inv = repo.update_investigation(inv_id, title=title, description=description, tags=tags)
-    if not inv:
+    updated = repo.update_investigation(inv.id, title=title, description=description, tags=tags, user_id=current_user.id)
+    if not updated:
         raise HTTPException(status_code=404, detail="Investigation not found")
-    return inv
+    return updated
 
 
 @router.delete("/investigations/{inv_id}")
-def delete_investigation(inv_id: str):
-    success = repo.delete_investigation(inv_id)
+def delete_investigation(
+    inv: Investigation = Depends(get_owned_investigation),
+    current_user: User = Depends(get_current_user)
+):
+    success = repo.delete_investigation(inv.id, user_id=current_user.id)
     if not success:
         raise HTTPException(status_code=404, detail="Investigation not found")
-    return {"status": "deleted", "id": inv_id}
-
-
-class DuplicateRequest(BaseModel):
-    title: Optional[str] = None
+    return {"status": "deleted", "id": inv.id}
 
 
 @router.post("/investigations/{inv_id}/duplicate", response_model=Investigation)
-def duplicate_investigation(inv_id: str, payload: Optional[DuplicateRequest] = None):
-    new_title = payload.title if payload else None
-    new_inv = repo.duplicate_investigation(inv_id, new_title=new_title)
+def duplicate_investigation(
+    payload: Dict[str, Any] = None,
+    inv: Investigation = Depends(get_owned_investigation),
+    current_user: User = Depends(get_current_user)
+):
+    new_title = payload.get("title") if payload else None
+    new_inv = repo.duplicate_investigation(inv.id, new_title=new_title, user_id=current_user.id)
     if not new_inv:
-        raise HTTPException(status_code=404, detail="Source investigation not found")
+        raise HTTPException(status_code=404, detail="Investigation not found")
     return new_inv
 
 
-from src.core.graph_analysis import GraphAnalyzer
-from src.core.export_service import ExportService
-from fastapi.responses import PlainTextResponse
-
-# --- Graph & Entities ---
+# =========================================================================
+# GRAPH VISUALIZATION & EXPORT (OWNERSHIP PROTECTED)
+# =========================================================================
 
 @router.get("/investigations/{inv_id}/graph")
-def get_graph(inv_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    entities = repo.get_entities_for_investigation(inv_id)
-    relationships = repo.get_relationships_for_investigation(inv_id)
-    return {
-        "investigation": inv,
-        "nodes": entities,
-        "edges": relationships
-    }
+def get_investigation_graph(inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
+    relationships = repo.get_relationships_for_investigation(inv.id)
+
+    nodes = [
+        {
+            "id": e.id,
+            "label": e.label,
+            "type": e.type.value if hasattr(e.type, "value") else str(e.type),
+            "properties": e.properties,
+            "provenance": e.provenance.model_dump()
+        }
+        for e in entities
+    ]
+
+    edges = [
+        {
+            "id": r.id,
+            "source": r.source_id,
+            "target": r.target_id,
+            "label": r.type,
+            "properties": r.properties
+        }
+        for r in relationships
+    ]
+
+    return {"nodes": nodes, "edges": edges}
 
 
 @router.get("/investigations/{inv_id}/export/json")
-def export_investigation_json(inv_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    entities = repo.get_entities_for_investigation(inv_id)
-    relationships = repo.get_relationships_for_investigation(inv_id)
+def export_investigation_json(inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
+    relationships = repo.get_relationships_for_investigation(inv.id)
     return ExportService.export_graph_json(inv, entities, relationships)
 
 
-@router.get("/investigations/{inv_id}/export/entities.csv", response_class=PlainTextResponse)
-def export_investigation_entities_csv(inv_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    entities = repo.get_entities_for_investigation(inv_id)
-    csv_str = ExportService.export_entities_csv(entities)
-    return PlainTextResponse(content=csv_str, media_type="text/csv")
+@router.get("/investigations/{inv_id}/export/csv/nodes")
+def export_investigation_csv_nodes(inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
+    csv_data = ExportService.export_entities_csv(entities)
+    return PlainTextResponse(content=csv_data, media_type="text/csv")
 
 
-@router.get("/investigations/{inv_id}/export/relationships.csv", response_class=PlainTextResponse)
-def export_investigation_relationships_csv(inv_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    relationships = repo.get_relationships_for_investigation(inv_id)
-    csv_str = ExportService.export_relationships_csv(relationships)
-    return PlainTextResponse(content=csv_str, media_type="text/csv")
+@router.get("/investigations/{inv_id}/export/csv/edges")
+def export_investigation_csv_edges(inv: Investigation = Depends(get_owned_investigation)):
+    relationships = repo.get_relationships_for_investigation(inv.id)
+    csv_data = ExportService.export_relationships_csv(relationships)
+    return PlainTextResponse(content=csv_data, media_type="text/csv")
 
 
-@router.get("/investigations/{inv_id}/report", response_class=PlainTextResponse)
-def get_investigation_report(inv_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    entities = repo.get_entities_for_investigation(inv_id)
-    relationships = repo.get_relationships_for_investigation(inv_id)
+@router.get("/investigations/{inv_id}/report")
+def export_investigation_report(inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
+    relationships = repo.get_relationships_for_investigation(inv.id)
     report_md = ExportService.generate_investigation_report(inv, entities, relationships)
     return PlainTextResponse(content=report_md, media_type="text/markdown")
 
 
 @router.get("/investigations/{inv_id}/analytics")
-def get_graph_analytics(inv_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    entities = repo.get_entities_for_investigation(inv_id)
-    relationships = repo.get_relationships_for_investigation(inv_id)
+def get_graph_analytics(inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
+    relationships = repo.get_relationships_for_investigation(inv.id)
     analyzer = GraphAnalyzer(entities, relationships)
     return analyzer.compute_metrics()
 
 
 @router.get("/investigations/{inv_id}/path")
-def find_shortest_path(inv_id: str, start_id: str, end_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    entities = repo.get_entities_for_investigation(inv_id)
-    relationships = repo.get_relationships_for_investigation(inv_id)
+def find_shortest_path(start_id: str, end_id: str, inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
+    relationships = repo.get_relationships_for_investigation(inv.id)
     analyzer = GraphAnalyzer(entities, relationships)
     path = analyzer.shortest_path(start_id, end_id)
     if path is None:
@@ -176,21 +334,21 @@ def find_shortest_path(inv_id: str, start_id: str, end_id: str):
 
 
 @router.get("/investigations/{inv_id}/search", response_model=List[Entity])
-def search_entities(inv_id: str, q: Optional[str] = None, entity_type: Optional[str] = None, limit: int = 50):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    all_entities = repo.get_entities_for_investigation(inv_id)
+def search_entities(
+    q: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    limit: int = 50,
+    inv: Investigation = Depends(get_owned_investigation)
+):
+    all_entities = repo.get_entities_for_investigation(inv.id)
     results: List[Entity] = []
 
     query = (q or "").lower().strip()
     target_type = (entity_type or "").lower().strip()
 
     for ent in all_entities:
-        # Filter by type if provided
         if target_type and target_type != "all" and ent.type.value.lower() != target_type:
             continue
-        # Filter by query if provided (match label, properties, or provenance source)
         if query:
             label_match = query in ent.label.lower()
             prop_match = any(query in str(v).lower() for v in ent.properties.values())
@@ -204,96 +362,115 @@ def search_entities(inv_id: str, q: Optional[str] = None, entity_type: Optional[
     return results
 
 
+# =========================================================================
+# ENTITIES & RELATIONSHIPS (SCOPED TO CASE OWNER)
+# =========================================================================
+
 @router.post("/investigations/{inv_id}/entities", response_model=Entity)
-def add_entity(inv_id: str, req: CreateEntityRequest):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    
+def add_entity(req: CreateEntityRequest, inv: Investigation = Depends(get_owned_investigation)):
     try:
-        norm_label, norm_props = normalize_and_validate_entity(req.type, req.label, req.properties)
+        norm_label, norm_properties = normalize_and_validate_entity(req.type, req.label, req.properties)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    provenance = req.provenance or Provenance(source="user_input", method="manual")
+    provenance = Provenance(
+        source=req.provenance.source if req.provenance else "manual_input",
+        method=req.provenance.method if req.provenance else "direct",
+        confidence=req.provenance.confidence if req.provenance else 1.0,
+        details=req.provenance.details if req.provenance else {}
+    )
+
     entity = Entity(
-        investigation_id=inv_id,
+        investigation_id=inv.id,
         type=req.type,
         label=norm_label,
-        properties=norm_props,
+        properties=norm_properties,
         provenance=provenance
     )
     return repo.create_entity(entity)
 
 
-class CreateEvidenceRequest(BaseModel):
-    source_identifier: str
-    source_url: Optional[str] = None
-    content_hash: Optional[str] = None
-    user_notes: Optional[str] = None
-
-
 @router.post("/investigations/{inv_id}/entities/{entity_id}/evidence")
-def add_entity_evidence(inv_id: str, entity_id: str, req: CreateEvidenceRequest):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
+def attach_evidence_to_entity(
+    entity_id: str,
+    payload: Dict[str, Any],
+    inv: Investigation = Depends(get_owned_investigation)
+):
+    # Verify entity exists and belongs to this investigation
+    ent = repo.get_entity(entity_id)
+    if not ent or ent.investigation_id != inv.id:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
     ev = repo.create_evidence(
-        inv_id=inv_id,
+        inv_id=inv.id,
+        source_identifier=payload.get("source_identifier", "manual_note"),
         entity_id=entity_id,
-        source_identifier=req.source_identifier,
-        source_url=req.source_url,
-        content_hash=req.content_hash,
-        user_notes=req.user_notes
+        source_url=payload.get("source_url"),
+        content_hash=payload.get("content_hash"),
+        user_notes=payload.get("user_notes")
     )
-    repo.log_audit(inv_id, "ATTACH_EVIDENCE", {"entity_id": entity_id, "evidence_id": ev["id"]})
+    repo.log_audit(inv.id, "ATTACH_EVIDENCE", {"entity_id": entity_id, "evidence_id": ev["id"]})
     return ev
 
 
-@router.get("/entities/{entity_id}/evidence")
-def list_entity_evidence(entity_id: str):
+@router.get("/investigations/{inv_id}/entities/{entity_id}/evidence")
+def list_entity_evidence(entity_id: str, inv: Investigation = Depends(get_owned_investigation)):
+    ent = repo.get_entity(entity_id)
+    if not ent or ent.investigation_id != inv.id:
+        raise HTTPException(status_code=404, detail="Entity not found")
     return repo.get_evidence_for_entity(entity_id)
 
 
 @router.get("/investigations/{inv_id}/audit-logs")
-def get_audit_trail(inv_id: str):
-    return repo.get_audit_logs(inv_id)
+def get_case_audit_logs(inv: Investigation = Depends(get_owned_investigation)):
+    return repo.get_audit_logs(inv.id)
 
 
 @router.patch("/entities/{entity_id}", response_model=Entity)
-def update_entity_endpoint(entity_id: str, payload: Dict[str, Any]):
+def update_entity_endpoint(
+    payload: Dict[str, Any],
+    entity: Entity = Depends(get_owned_entity)
+):
     label = payload.get("label")
     properties = payload.get("properties")
-    ent = repo.update_entity(entity_id, label=label, properties=properties)
+    ent = repo.update_entity(entity.id, label=label, properties=properties)
     if not ent:
         raise HTTPException(status_code=404, detail="Entity not found")
     return ent
 
 
 @router.delete("/entities/{entity_id}")
-def delete_entity_endpoint(entity_id: str):
-    success = repo.delete_entity(entity_id)
+def delete_entity_endpoint(entity: Entity = Depends(get_owned_entity)):
+    success = repo.delete_entity(entity.id)
     if not success:
         raise HTTPException(status_code=404, detail="Entity not found")
-    return {"status": "deleted", "id": entity_id}
+    return {"status": "deleted", "id": entity.id}
 
 
 @router.delete("/relationships/{rel_id}")
-def delete_relationship_endpoint(rel_id: str):
-    success = repo.delete_relationship(rel_id)
+def delete_relationship_endpoint(rel: Relationship = Depends(get_owned_relationship)):
+    success = repo.delete_relationship(rel.id)
     if not success:
         raise HTTPException(status_code=404, detail="Relationship not found")
-    return {"status": "deleted", "id": rel_id}
+    return {"status": "deleted", "id": rel.id}
 
 
 @router.post("/investigations/{inv_id}/relationships", response_model=Relationship)
-def add_relationship(inv_id: str, req: CreateRelationshipRequest):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    provenance = Provenance(source="user_action", method="manual_link")
+def add_relationship(req: CreateRelationshipRequest, inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
+    entity_ids = {e.id for e in entities}
+    if req.source_id not in entity_ids or req.target_id not in entity_ids:
+        raise HTTPException(status_code=400, detail="Source or target entity does not belong to this investigation")
+
+    provenance = Provenance(
+        source=req.provenance.source if req.provenance else "manual_link",
+        method=req.provenance.method if req.provenance else "direct",
+        confidence=req.provenance.confidence if req.provenance else 1.0,
+        details=req.provenance.details if req.provenance else {}
+    )
+
     rel = Relationship(
-        investigation_id=inv_id,
+        investigation_id=inv.id,
         source_id=req.source_id,
         target_id=req.target_id,
         type=req.type,
@@ -303,7 +480,9 @@ def add_relationship(inv_id: str, req: CreateRelationshipRequest):
     return repo.create_relationship(rel)
 
 
-# --- Transformations ---
+# =========================================================================
+# TRANSFORMATIONS (SCOPED TO CASE OWNER)
+# =========================================================================
 
 @router.get("/transforms", response_model=List[TransformMetadata])
 def list_transforms():
@@ -316,8 +495,8 @@ def get_compatible_transforms(entity_type: str):
 
 
 @router.post("/investigations/{inv_id}/transforms/execute", response_model=List[TransformResultCandidate])
-async def execute_transform(inv_id: str, req: ExecuteTransformRequest):
-    entities = repo.get_entities_for_investigation(inv_id)
+async def execute_transform(req: ExecuteTransformRequest, inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
     entity = next((e for e in entities if e.id == req.entity_id), None)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found in this investigation")
@@ -329,8 +508,8 @@ async def execute_transform(inv_id: str, req: ExecuteTransformRequest):
 
 
 @router.post("/investigations/{inv_id}/transforms/merge")
-def merge_transform_results(inv_id: str, req: MergeCandidatesRequest):
-    entities = repo.get_entities_for_investigation(inv_id)
+def merge_transform_results(req: MergeCandidatesRequest, inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
     source_entity = next((e for e in entities if e.id == req.entity_id), None)
     if not source_entity:
         raise HTTPException(status_code=404, detail="Source entity not found")
@@ -338,7 +517,6 @@ def merge_transform_results(inv_id: str, req: MergeCandidatesRequest):
     created_nodes: List[Entity] = []
     created_edges: List[Relationship] = []
 
-    # Map existing labels by type to avoid duplicate nodes
     existing_map = {(e.type, e.label.lower()): e for e in entities}
 
     for cand in req.candidates:
@@ -346,7 +524,7 @@ def merge_transform_results(inv_id: str, req: MergeCandidatesRequest):
         target_node = existing_map.get(key)
         if not target_node:
             target_node = Entity(
-                investigation_id=inv_id,
+                investigation_id=inv.id,
                 type=cand.entity_type,
                 label=cand.label,
                 properties=cand.properties,
@@ -361,9 +539,8 @@ def merge_transform_results(inv_id: str, req: MergeCandidatesRequest):
             existing_map[key] = target_node
             created_nodes.append(target_node)
 
-        # Create relationship
         rel = Relationship(
-            investigation_id=inv_id,
+            investigation_id=inv.id,
             source_id=source_entity.id,
             target_id=target_node.id,
             type=cand.relationship_type,
@@ -384,21 +561,19 @@ def merge_transform_results(inv_id: str, req: MergeCandidatesRequest):
 
 
 # =========================================================================
-# DOCUMENT INTELLIGENCE, ENTITY RESOLUTION & AUTO-GRAPH BUILDING
+# DOCUMENT INTELLIGENCE & ENTITY RESOLUTION (SCOPED TO CASE OWNER)
 # =========================================================================
 
-from fastapi import UploadFile, File
 from src.core.document_extractor import DocumentExtractor
 from src.core.document_intelligence import DocumentIntelligenceEngine
 from src.core.entity_resolution import EntityResolutionEngine
 
 
 @router.post("/investigations/{inv_id}/documents/upload")
-async def upload_document(inv_id: str, file: UploadFile = File(...)):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-
+async def upload_document(
+    file: UploadFile = File(...),
+    inv: Investigation = Depends(get_owned_investigation)
+):
     content = await file.read()
     if len(content) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large. Maximum supported size is 25MB.")
@@ -406,7 +581,7 @@ async def upload_document(inv_id: str, file: UploadFile = File(...)):
     try:
         extracted_text, metadata = DocumentExtractor.extract_text(file.filename, content)
         doc = repo.create_document(
-            inv_id=inv_id,
+            inv_id=inv.id,
             filename=file.filename,
             extension=metadata["extension"],
             size_bytes=metadata["size_bytes"],
@@ -415,19 +590,19 @@ async def upload_document(inv_id: str, file: UploadFile = File(...)):
             metadata=metadata,
             status="completed"
         )
-        repo.log_audit(inv_id, "UPLOAD_DOCUMENT", {"document_id": doc["id"], "filename": file.filename})
+        repo.log_audit(inv.id, "UPLOAD_DOCUMENT", {"document_id": doc["id"], "filename": file.filename})
 
         # Run extraction pipeline automatically
         intel = DocumentIntelligenceEngine.extract_all(extracted_text, doc["id"])
 
         # Compare against existing entities across all documents for cross-doc resolution
-        existing_intel = repo.get_intelligence(inv_id)
+        existing_intel = repo.get_intelligence(inv.id)
         all_entities = existing_intel["entities"] + intel["entities"]
         cross_doc_matches = EntityResolutionEngine.match_entities_across_documents(all_entities)
 
         # Save intelligence records
         repo.save_intelligence(
-            inv_id=inv_id,
+            inv_id=inv.id,
             doc_id=doc["id"],
             entities=intel["entities"],
             relationships=intel["relationships"],
@@ -443,7 +618,7 @@ async def upload_document(inv_id: str, file: UploadFile = File(...)):
         }
     except Exception as e:
         doc = repo.create_document(
-            inv_id=inv_id,
+            inv_id=inv.id,
             filename=file.filename,
             extension=os.path.splitext(file.filename)[1].lower() if file.filename else "",
             size_bytes=len(content),
@@ -457,35 +632,78 @@ async def upload_document(inv_id: str, file: UploadFile = File(...)):
 
 
 @router.get("/investigations/{inv_id}/documents")
-def list_investigation_documents(inv_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    return repo.list_documents(inv_id)
+def list_investigation_documents(inv: Investigation = Depends(get_owned_investigation)):
+    return repo.list_documents(inv.id)
 
 
 @router.get("/documents/{doc_id}")
-def get_document_details(doc_id: str):
-    doc = repo.get_document(doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+def get_document_details(doc: dict = Depends(get_owned_document)):
     return doc
 
 
 @router.delete("/documents/{doc_id}")
-def delete_document_endpoint(doc_id: str):
-    success = repo.delete_document(doc_id)
+def delete_document_endpoint(doc: dict = Depends(get_owned_document)):
+    success = repo.delete_document(doc["id"])
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
-    return {"status": "deleted", "id": doc_id}
+    return {"status": "deleted", "id": doc["id"]}
+
+
+@router.post("/documents/{doc_id}/reprocess")
+def reprocess_document_endpoint(doc: dict = Depends(get_owned_document)):
+    # Reprocess document extraction using existing text
+    extracted_text = doc.get("extracted_text", "")
+    inv_id = doc["investigation_id"]
+
+    intel = DocumentIntelligenceEngine.extract_all(extracted_text, doc["id"])
+    existing_intel = repo.get_intelligence(inv_id)
+    # Filter out previous mentions from this doc
+    other_entities = [e for e in existing_intel["entities"] if e.get("source_doc_id") != doc["id"]]
+    all_entities = other_entities + intel["entities"]
+    cross_doc_matches = EntityResolutionEngine.match_entities_across_documents(all_entities)
+
+    repo.save_intelligence(
+        inv_id=inv_id,
+        doc_id=doc["id"],
+        entities=intel["entities"],
+        relationships=intel["relationships"],
+        matches=cross_doc_matches
+    )
+
+    return {
+        "status": "reprocessed",
+        "document_id": doc["id"],
+        "extracted_entities_count": len(intel["entities"]),
+        "extracted_relationships_count": len(intel["relationships"]),
+        "cross_document_matches_count": len(cross_doc_matches)
+    }
 
 
 @router.get("/investigations/{inv_id}/intelligence")
-def get_investigation_intelligence(inv_id: str):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-    return repo.get_intelligence(inv_id)
+def get_investigation_intelligence(inv: Investigation = Depends(get_owned_investigation)):
+    intel = repo.get_intelligence(inv.id)
+    all_entities = intel.get("entities", [])
+    # Always compute up-to-date cross-document matches across all uploaded documents
+    fresh_matches = EntityResolutionEngine.match_entities_across_documents(all_entities)
+
+    # Deduplicate matches by entity pair
+    unique_matches: List[Dict[str, Any]] = []
+    seen_pairs: Set[Tuple[str, str]] = set()
+    for m in fresh_matches:
+        l1 = (m.get("entity1_label") or m.get("entity_a", {}).get("label") or "").lower().strip()
+        l2 = (m.get("entity2_label") or m.get("entity_b", {}).get("label") or "").lower().strip()
+        pair = tuple(sorted([l1, l2]))
+        if pair not in seen_pairs:
+            seen_pairs.add(pair)
+            unique_matches.append(m)
+
+    return {
+        "entities": all_entities,
+        "relationships": intel.get("relationships", []),
+        "matches": unique_matches,
+        "canonical_entities": all_entities,
+        "match_candidates": unique_matches
+    }
 
 
 class BuildGraphFromIntelRequest(BaseModel):
@@ -496,12 +714,11 @@ class BuildGraphFromIntelRequest(BaseModel):
 
 
 @router.post("/investigations/{inv_id}/intelligence/build-graph")
-def build_graph_from_intelligence(inv_id: str, req: BuildGraphFromIntelRequest):
-    inv = repo.get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
-
-    existing_entities = repo.get_entities_for_investigation(inv_id)
+def build_graph_from_intelligence(
+    req: BuildGraphFromIntelRequest,
+    inv: Investigation = Depends(get_owned_investigation)
+):
+    existing_entities = repo.get_entities_for_investigation(inv.id)
     node_map: Dict[Tuple[str, str], Entity] = {(e.type.value if hasattr(e.type, 'value') else str(e.type), e.label.lower()): e for e in existing_entities}
     created_nodes: List[Entity] = []
     created_edges: List[Relationship] = []
@@ -510,13 +727,13 @@ def build_graph_from_intelligence(inv_id: str, req: BuildGraphFromIntelRequest):
     doc_node: Optional[Entity] = None
     if req.include_document_node and req.document_id:
         doc = repo.get_document(req.document_id)
-        if doc:
+        if doc and doc["investigation_id"] == inv.id:
             key = ("document", doc["filename"].lower())
             if key in node_map:
                 doc_node = node_map[key]
             else:
                 doc_node = Entity(
-                    investigation_id=inv_id,
+                    investigation_id=inv.id,
                     type=EntityType.DOCUMENT,
                     label=doc["filename"],
                     properties={"sha256": doc["sha256"], "size_bytes": doc["size_bytes"]},
@@ -541,7 +758,7 @@ def build_graph_from_intelligence(inv_id: str, req: BuildGraphFromIntelRequest):
                 norm_label, norm_props = label, {}
 
             target_node = Entity(
-                investigation_id=inv_id,
+                investigation_id=inv.id,
                 type=EntityType(ent_type_str),
                 label=norm_label,
                 properties=norm_props,
@@ -559,7 +776,7 @@ def build_graph_from_intelligence(inv_id: str, req: BuildGraphFromIntelRequest):
         # Connect entity to document if doc node exists
         if doc_node and target_node.id != doc_node.id:
             rel = Relationship(
-                investigation_id=inv_id,
+                investigation_id=inv.id,
                 source_id=doc_node.id,
                 target_id=target_node.id,
                 type="MENTIONS",
@@ -578,7 +795,7 @@ def build_graph_from_intelligence(inv_id: str, req: BuildGraphFromIntelRequest):
 
         if src_node and tgt_node and src_node.id != tgt_node.id:
             rel = Relationship(
-                investigation_id=inv_id,
+                investigation_id=inv.id,
                 source_id=src_node.id,
                 target_id=tgt_node.id,
                 type=r_item["type"],
@@ -592,7 +809,7 @@ def build_graph_from_intelligence(inv_id: str, req: BuildGraphFromIntelRequest):
             )
             created_edges.append(repo.create_relationship(rel))
 
-    repo.log_audit(inv_id, "BUILD_GRAPH_FROM_DOCUMENTS", {"nodes_added": len(created_nodes), "edges_added": len(created_edges)})
+    repo.log_audit(inv.id, "BUILD_GRAPH_FROM_DOCUMENTS", {"nodes_added": len(created_nodes), "edges_added": len(created_edges)})
 
     return {
         "status": "success",
@@ -600,4 +817,3 @@ def build_graph_from_intelligence(inv_id: str, req: BuildGraphFromIntelRequest):
         "edges_added": len(created_edges),
         "total_nodes": len(node_map)
     }
-

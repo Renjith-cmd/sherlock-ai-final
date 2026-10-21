@@ -32,7 +32,7 @@ def test_evidence_attachment_and_audit_trail():
     assert evidence["entity_id"] == ent_id
 
     # 4. Retrieve Evidence list for Entity
-    ev_list = client.get(f"/api/entities/{ent_id}/evidence").json()
+    ev_list = client.get(f"/api/investigations/{inv_id}/entities/{ent_id}/evidence").json()
     assert len(ev_list) == 1
     assert ev_list[0]["source_url"] == "https://advisory.cert-in.org.in/2026-99.html"
 

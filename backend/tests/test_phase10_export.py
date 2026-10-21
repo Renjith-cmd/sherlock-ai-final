@@ -29,14 +29,14 @@ def test_export_and_report_generation():
     assert bundle["investigation"]["title"] == "Operation Cerberus"
 
     # 4. Test Entities CSV Export
-    csv_ent_res = client.get(f"/api/investigations/{inv_id}/export/entities.csv")
+    csv_ent_res = client.get(f"/api/investigations/{inv_id}/export/csv/nodes")
     assert csv_ent_res.status_code == 200
     assert "c2-domain.com" in csv_ent_res.text
     assert "198.51.100.2" in csv_ent_res.text
     assert "label" in csv_ent_res.text.split("\n")[0]
 
     # 5. Test Relationships CSV Export
-    csv_rel_res = client.get(f"/api/investigations/{inv_id}/export/relationships.csv")
+    csv_rel_res = client.get(f"/api/investigations/{inv_id}/export/csv/edges")
     assert csv_rel_res.status_code == 200
     assert "RESOLVES_TO" in csv_rel_res.text
 

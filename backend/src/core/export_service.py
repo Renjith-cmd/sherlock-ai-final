@@ -13,7 +13,7 @@ class ExportService:
         """Produce portable, validated JSON graph bundle."""
         return {
             "format_version": "1.0.0",
-            "platform": "Arkana Investigator",
+            "platform": "Sherlock AI",
             "investigation": investigation.model_dump(),
             "nodes": [e.model_dump() for e in entities],
             "edges": [r.model_dump() for r in relationships],
@@ -110,7 +110,7 @@ class ExportService:
         lines.extend([
             "",
             "---",
-            "*Report compiled automatically by Arkana Investigator Forensic Link Engine.*"
+            "*Report compiled automatically by Sherlock AI Forensic Link Engine.*"
         ])
 
         return "\n".join(lines)

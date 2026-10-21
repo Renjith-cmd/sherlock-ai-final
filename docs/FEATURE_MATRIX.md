@@ -1,4 +1,4 @@
-# Feature Completion Matrix: Arkana Investigator Platform
+# Feature Completion Matrix: Sherlock AI Platform
 
 | Phase | Feature Description | Complexity | Planned Target | Actual Status | Test Coverage |
 | :--- | :--- | :--- | :--- | :--- | :--- |

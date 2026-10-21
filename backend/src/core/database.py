@@ -1,10 +1,11 @@
-"""SQLite Database management and schema migrations."""
+"""SQLite Database management, user isolation, and schema migrations."""
 
 import sqlite3
 import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from src.core.models import Investigation, Entity, Relationship, EntityType, Provenance
+from src.core.auth_security import User, UserInDB
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "investigator.db"
 
@@ -22,17 +23,41 @@ def get_connection(db_file: Optional[Path] = None) -> sqlite3.Connection:
 def init_db(db_file: Optional[Path] = None):
     conn = get_connection(db_file)
     with conn:
+        # 1. Users table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                full_name TEXT NOT NULL DEFAULT '',
+                password_hash TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);")
+
+        # 2. Investigations table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS investigations (
                 id TEXT PRIMARY KEY,
+                user_id TEXT,
                 title TEXT NOT NULL,
                 description TEXT,
                 tags TEXT NOT NULL DEFAULT '[]',
                 is_archived INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             );
         """)
+
+        # Migration: Add user_id column if it doesn't exist
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(investigations)").fetchall()]
+        if "user_id" not in cols:
+            conn.execute("ALTER TABLE investigations ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL;")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS entities (
                 id TEXT PRIMARY KEY,
@@ -55,6 +80,7 @@ def init_db(db_file: Optional[Path] = None):
                 type TEXT NOT NULL DEFAULT 'ASSOCIATED_WITH',
                 properties TEXT NOT NULL DEFAULT '{}',
                 provenance TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
                 FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE CASCADE,
                 FOREIGN KEY (source_id) REFERENCES entities(id) ON DELETE CASCADE,
                 FOREIGN KEY (target_id) REFERENCES entities(id) ON DELETE CASCADE
@@ -116,6 +142,7 @@ def init_db(db_file: Optional[Path] = None):
                 FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
             );
         """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_inv_user ON investigations(user_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_inv ON entities(investigation_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_inv ON relationships(investigation_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_source ON relationships(source_id);")
@@ -133,25 +160,84 @@ class DatabaseRepository:
         self.db_file = db_file
         init_db(self.db_file)
 
+    # --- User Management Operations ---
+
+    def create_user(self, user: User, password_hash: str) -> User:
+        conn = get_connection(self.db_file)
+        with conn:
+            conn.execute(
+                "INSERT INTO users (id, username, email, full_name, password_hash, is_active, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user.id, user.username, user.email, user.full_name or "", password_hash, int(user.is_active), user.created_at)
+            )
+        conn.close()
+        return user
+
+    def get_user_by_id(self, user_id: str) -> Optional[User]:
+        conn = get_connection(self.db_file)
+        cur = conn.execute("SELECT id, username, email, full_name, is_active, created_at FROM users WHERE id = ?", (user_id,))
+        r = cur.fetchone()
+        conn.close()
+        if not r:
+            return None
+        return User(
+            id=r["id"],
+            username=r["username"],
+            email=r["email"],
+            full_name=r["full_name"],
+            is_active=bool(r["is_active"]),
+            created_at=r["created_at"]
+        )
+
+    def get_user_by_username_or_email(self, identifier: str) -> Optional[UserInDB]:
+        clean_id = identifier.strip().lower()
+        conn = get_connection(self.db_file)
+        cur = conn.execute(
+            "SELECT * FROM users WHERE LOWER(username) = ? OR LOWER(email) = ?",
+            (clean_id, clean_id)
+        )
+        r = cur.fetchone()
+        conn.close()
+        if not r:
+            return None
+        return UserInDB(
+            id=r["id"],
+            username=r["username"],
+            email=r["email"],
+            full_name=r["full_name"],
+            password_hash=r["password_hash"],
+            is_active=bool(r["is_active"]),
+            created_at=r["created_at"]
+        )
+
+    # --- Investigation Operations (Strictly Scoped) ---
+
     def create_investigation(self, inv: Investigation) -> Investigation:
         conn = get_connection(self.db_file)
         with conn:
             conn.execute(
-                "INSERT INTO investigations (id, title, description, tags, is_archived, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (inv.id, inv.title, inv.description, json.dumps(inv.tags), int(inv.is_archived), inv.created_at, inv.updated_at)
+                "INSERT INTO investigations (id, user_id, title, description, tags, is_archived, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (inv.id, inv.user_id, inv.title, inv.description, json.dumps(inv.tags), int(inv.is_archived), inv.created_at, inv.updated_at)
             )
         conn.close()
         return inv
 
-    def list_investigations(self) -> List[Investigation]:
+    def list_investigations(self, user_id: Optional[str] = None) -> List[Investigation]:
         conn = get_connection(self.db_file)
-        cur = conn.execute("SELECT * FROM investigations WHERE is_archived = 0 ORDER BY updated_at DESC")
+        if user_id is not None:
+            cur = conn.execute(
+                "SELECT * FROM investigations WHERE is_archived = 0 AND user_id = ? ORDER BY updated_at DESC",
+                (user_id,)
+            )
+        else:
+            cur = conn.execute("SELECT * FROM investigations WHERE is_archived = 0 ORDER BY updated_at DESC")
         rows = cur.fetchall()
         conn.close()
         return [
             Investigation(
                 id=r["id"],
+                user_id=r["user_id"],
                 title=r["title"],
                 description=r["description"],
                 tags=json.loads(r["tags"]),
@@ -162,15 +248,19 @@ class DatabaseRepository:
             for r in rows
         ]
 
-    def get_investigation(self, inv_id: str) -> Optional[Investigation]:
+    def get_investigation(self, inv_id: str, user_id: Optional[str] = None) -> Optional[Investigation]:
         conn = get_connection(self.db_file)
-        cur = conn.execute("SELECT * FROM investigations WHERE id = ?", (inv_id,))
+        if user_id is not None:
+            cur = conn.execute("SELECT * FROM investigations WHERE id = ? AND user_id = ?", (inv_id, user_id))
+        else:
+            cur = conn.execute("SELECT * FROM investigations WHERE id = ?", (inv_id,))
         r = cur.fetchone()
         conn.close()
         if not r:
             return None
         return Investigation(
             id=r["id"],
+            user_id=r["user_id"],
             title=r["title"],
             description=r["description"],
             tags=json.loads(r["tags"]),
@@ -179,10 +269,14 @@ class DatabaseRepository:
             updated_at=r["updated_at"]
         )
 
-    def update_investigation(self, inv_id: str, title: Optional[str] = None, description: Optional[str] = None, tags: Optional[List[str]] = None) -> Optional[Investigation]:
+    def update_investigation(self, inv_id: str, title: Optional[str] = None, description: Optional[str] = None,
+                             tags: Optional[List[str]] = None, user_id: Optional[str] = None) -> Optional[Investigation]:
         conn = get_connection(self.db_file)
         with conn:
-            cur = conn.execute("SELECT * FROM investigations WHERE id = ?", (inv_id,))
+            if user_id is not None:
+                cur = conn.execute("SELECT * FROM investigations WHERE id = ? AND user_id = ?", (inv_id, user_id))
+            else:
+                cur = conn.execute("SELECT * FROM investigations WHERE id = ?", (inv_id,))
             row = cur.fetchone()
             if not row:
                 conn.close()
@@ -201,6 +295,7 @@ class DatabaseRepository:
         conn.close()
         return Investigation(
             id=r["id"],
+            user_id=r["user_id"],
             title=r["title"],
             description=r["description"],
             tags=json.loads(r["tags"]),
@@ -209,16 +304,19 @@ class DatabaseRepository:
             updated_at=r["updated_at"]
         )
 
-    def delete_investigation(self, inv_id: str) -> bool:
+    def delete_investigation(self, inv_id: str, user_id: Optional[str] = None) -> bool:
         conn = get_connection(self.db_file)
         with conn:
-            cur = conn.execute("DELETE FROM investigations WHERE id = ?", (inv_id,))
+            if user_id is not None:
+                cur = conn.execute("DELETE FROM investigations WHERE id = ? AND user_id = ?", (inv_id, user_id))
+            else:
+                cur = conn.execute("DELETE FROM investigations WHERE id = ?", (inv_id,))
             deleted = cur.rowcount > 0
         conn.close()
         return deleted
 
-    def duplicate_investigation(self, inv_id: str, new_title: Optional[str] = None) -> Optional[Investigation]:
-        source = self.get_investigation(inv_id)
+    def duplicate_investigation(self, inv_id: str, new_title: Optional[str] = None, user_id: Optional[str] = None) -> Optional[Investigation]:
+        source = self.get_investigation(inv_id, user_id=user_id)
         if not source:
             return None
         import uuid
@@ -228,6 +326,7 @@ class DatabaseRepository:
         title = new_title or f"{source.title} (Copy)"
         new_inv = Investigation(
             id=new_inv_id,
+            user_id=source.user_id,
             title=title,
             description=source.description,
             tags=source.tags,
@@ -272,6 +371,8 @@ class DatabaseRepository:
 
         return new_inv
 
+    # --- Entity & Relationship Operations ---
+
     def create_entity(self, entity: Entity) -> Entity:
         conn = get_connection(self.db_file)
         with conn:
@@ -292,6 +393,42 @@ class DatabaseRepository:
             conn.execute("UPDATE investigations SET updated_at = ? WHERE id = ?", (entity.updated_at, entity.investigation_id))
         conn.close()
         return entity
+
+    def get_entity(self, entity_id: str) -> Optional[Entity]:
+        conn = get_connection(self.db_file)
+        cur = conn.execute("SELECT * FROM entities WHERE id = ?", (entity_id,))
+        r = cur.fetchone()
+        conn.close()
+        if not r:
+            return None
+        return Entity(
+            id=r["id"],
+            investigation_id=r["investigation_id"],
+            type=EntityType(r["type"]),
+            label=r["label"],
+            properties=json.loads(r["properties"]),
+            provenance=Provenance(**json.loads(r["provenance"])),
+            created_at=r["created_at"],
+            updated_at=r["updated_at"]
+        )
+
+    def get_relationship(self, rel_id: str) -> Optional[Relationship]:
+        conn = get_connection(self.db_file)
+        cur = conn.execute("SELECT * FROM relationships WHERE id = ?", (rel_id,))
+        r = cur.fetchone()
+        conn.close()
+        if not r:
+            return None
+        return Relationship(
+            id=r["id"],
+            investigation_id=r["investigation_id"],
+            source_id=r["source_id"],
+            target_id=r["target_id"],
+            type=r["type"],
+            properties=json.loads(r["properties"]),
+            provenance=Provenance(**json.loads(r["provenance"])),
+            created_at=r["created_at"]
+        )
 
     def get_entities_for_investigation(self, inv_id: str) -> List[Entity]:
         conn = get_connection(self.db_file)
@@ -562,4 +699,3 @@ class DatabaseRepository:
             "relationships": all_relationships,
             "matches": all_matches
         }
-

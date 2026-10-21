@@ -10,7 +10,7 @@ client = TestClient(app)
 
 
 def test_path_traversal_protection():
-    base = Path("/home/renjith-cmd/Documents/maltego-inspired-investigator/data")
+    base = Path(__file__).resolve().parents[2] / "data"
     
     # 1. Safe file path resolves cleanly
     safe_file = validate_safe_file_path(base, "report.pdf")

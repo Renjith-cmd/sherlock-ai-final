@@ -1,4 +1,4 @@
-# Implementation Plan: Graph-First Investigation Workbench (Arkana Investigator)
+# Implementation Plan: Sherlock AI Graph-First Investigation Workbench
 
 ## Executive Summary
 This document outlines the systematic, clean-room implementation of an independent graph-first link analysis and OSINT investigation platform. Designed with clean architectural separation, robust provenance modeling, real transformation pipelines, and native interactive graph manipulation.
@@ -6,8 +6,8 @@ This document outlines the systematic, clean-room implementation of an independe
 ---
 
 ## 1. Project Identity & Architecture
-- **Application Name**: Arkana Investigator (or Maltego-Inspired Open Link Analysis Workbench)
-- **Directory**: `/home/renjith-cmd/Documents/maltego-inspired-investigator`
+- **Application Name**: Sherlock AI
+- **Directory**: Repository root
 - **Repository**: Isolated Git repository with no upstream remotes.
 - **Frontend Stack**: React 18/19, TypeScript, Vite, Cytoscape.js (or @xyflow/react / D3-force), Lucide icons, Vanilla CSS tokens.
 - **Backend Stack**: Python 3.14, FastAPI, Pydantic v2, Uvicorn, SQLite3 WAL mode.

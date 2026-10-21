@@ -1,4 +1,4 @@
-"""Unit and integration tests for the Arkana Investigator backend."""
+"""Unit and integration tests for the Sherlock AI backend."""
 
 import pytest
 from pathlib import Path

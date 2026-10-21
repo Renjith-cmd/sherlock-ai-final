@@ -1,4 +1,4 @@
-# System Architecture: Arkana Investigator Platform
+# System Architecture: Sherlock AI Platform
 
 ## 1. Architectural Principles
 1. **Clean-Room Design**: No dependencies, code, or data structures copied from prior projects.
@@ -13,7 +13,7 @@
 
 ```
 +-----------------------------------------------------------------------------------+
-|                            Arkana Frontend (React + TS)                           |
+|                             Sherlock AI Frontend (React + TS)                     |
 |  +--------------------+  +--------------------------------+  +-----------------+  |
 |  | Investigation Nav  |  |   Cytoscape Graph Canvas       |  | Inspector Panel |  |
 |  | - Case Explorer    |  |   - Pan / Zoom / Drag          |  | - Properties    |  |
