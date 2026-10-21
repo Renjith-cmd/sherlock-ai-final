@@ -33,7 +33,7 @@ def get_nlp_model():
 
 # Common Corporate & Title Lexicons
 TITLES = r"\b(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?|Director|Officer|Analyst|Agent|Commander|Chairman|CEO|CTO|CFO|Special Agent|Inspector|Detective)\b"
-CORP_SUFFIXES = r"\b(?:Inc\.?|Corp\.?|LLC|Ltd\.?|Holdings|GmbH|PLC|Group|Enterprises|Technologies|Solutions|Laboratories|Foundation|Co\.?|S\.A\.?|AG)\b"
+CORP_SUFFIXES = r"\b(?:Inc\.?|Corp\.?|Corporation|LLC|Ltd\.?|Limited|Holdings|GmbH|PLC|Group|Enterprises|Technologies|Technology|Solutions|Laboratories|Foundation|Systems?|University|Institute|Bank|Agency|Department|Association|Co\.?|S\.A\.?|AG)\b"
 
 
 class DocumentIntelligenceEngine:
@@ -282,6 +282,51 @@ class DocumentIntelligenceEngine:
                     "context": cls._get_context(chunk_text, m.start(), m.end()),
                     "confidence": 0.94,
                     "method": "contextual_role_header"
+                })
+
+        # Narrative person names at sentence starts when followed by a person-specific action.
+        narrative_person_pattern = (
+            r"(?:^|(?<=[.!?])\s+)([A-Z][a-z]+(?:[-'][A-Z]?[a-z]+)?"
+            r"\s+[A-Z][a-z]+(?:[-'][A-Z]?[a-z]+)?)"
+            r"\s+(?=(?:arrived|traveled|travelled|reported|stated|confirmed|"
+            r"signed|joined|visited|testified|announced|identified|contacted|"
+            r"met|spoke|presented|represented)\b)"
+        )
+        for m in re.finditer(narrative_person_pattern, chunk_text):
+            name = m.group(1).strip()
+            if not any(cls._spans_overlap(m.start(1), m.end(1), s, e) for (s, e) in spacy_spans):
+                mentions.append({
+                    "type": EntityType.PERSON.value,
+                    "label": name,
+                    "original_text": name,
+                    "start_offset": offset_delta + m.start(1),
+                    "end_offset": offset_delta + m.end(1),
+                    "context": cls._get_context(chunk_text, m.start(1), m.end(1)),
+                    "confidence": 0.84,
+                    "method": "contextual_narrative_person"
+                })
+
+        # Place names following common geographic prepositions or movement phrases.
+        location_pattern = (
+            r"\b(?:in|near|from|within|outside|at|traveled to|travelled to|"
+            r"arrived in|located in|based in)\s+"
+            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})"
+        )
+        non_location_phrases = {"the", "this", "that", "his", "her", "their", "our"}
+        for m in re.finditer(location_pattern, chunk_text):
+            place = m.group(1).strip()
+            if place.lower() in non_location_phrases:
+                continue
+            if not any(cls._spans_overlap(m.start(1), m.end(1), s, e) for (s, e) in spacy_spans):
+                mentions.append({
+                    "type": EntityType.LOCATION.value,
+                    "label": place,
+                    "original_text": place,
+                    "start_offset": offset_delta + m.start(1),
+                    "end_offset": offset_delta + m.end(1),
+                    "context": cls._get_context(chunk_text, m.start(1), m.end(1)),
+                    "confidence": 0.78,
+                    "method": "contextual_location"
                 })
 
         return mentions

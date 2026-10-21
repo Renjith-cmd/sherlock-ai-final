@@ -84,6 +84,23 @@ def test_contextual_extraction_pass_c():
     assert any("Nexis Holdings" in l for l in labels)
 
 
+def test_rule_fallback_extracts_narrative_person_location_and_systems_org(monkeypatch):
+    """Production fallback must extract common named entities without a spaCy model."""
+    monkeypatch.setattr("src.core.document_intelligence.get_nlp_model", lambda: None)
+    text = (
+        "Elena Rostova arrived in Geneva yesterday to represent CyberDyne Systems at the summit. "
+        "CEO: Jonathan Vance signed the agreement."
+    )
+
+    result = DocumentIntelligenceEngine.extract_all(text, "doc-rule-fallback")
+    entities = {(entity["type"], entity["label"]) for entity in result["entities"]}
+
+    assert (EntityType.PERSON.value, "Elena Rostova") in entities
+    assert (EntityType.LOCATION.value, "Geneva") in entities
+    assert (EntityType.ORGANIZATION.value, "CyberDyne Systems") in entities
+    assert (EntityType.PERSON.value, "Jonathan Vance") in entities
+
+
 def test_long_document_chunking_and_offsets():
     """Verify document longer than chunk limit processes cleanly without losing entities."""
     long_prefix = "The operational log continues with standard security checks.\n" * 400
