@@ -2,6 +2,7 @@
 
 import sqlite3
 import json
+import os
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from src.core.models import Investigation, Entity, Relationship, EntityType, Provenance
@@ -10,7 +11,33 @@ from src.core.auth_security import User, UserInDB
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "investigator.db"
 
 
-def get_connection(db_file: Optional[Path] = None) -> sqlite3.Connection:
+class PostgresConnection:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, query: str, parameters=()):
+        return self._connection.execute(query.replace("?", "%s"), parameters)
+
+    def __enter__(self):
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self._connection.__exit__(exc_type, exc_value, traceback)
+
+    def close(self):
+        self._connection.close()
+
+
+def get_connection(db_file: Optional[Path] = None):
+    database_url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
+    if database_url and db_file is None:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        connection = psycopg.connect(database_url, row_factory=dict_row, connect_timeout=10)
+        return PostgresConnection(connection)
+
     target = db_file or DB_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(target))
@@ -54,7 +81,14 @@ def init_db(db_file: Optional[Path] = None):
         """)
 
         # Migration: Add user_id column if it doesn't exist
-        cols = [r["name"] for r in conn.execute("PRAGMA table_info(investigations)").fetchall()]
+        if os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL"):
+            cols = [r["name"] for r in conn.execute(
+                "SELECT column_name AS name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = ?",
+                ("investigations",),
+            ).fetchall()]
+        else:
+            cols = [r["name"] for r in conn.execute("PRAGMA table_info(investigations)").fetchall()]
         if "user_id" not in cols:
             conn.execute("ALTER TABLE investigations ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL;")
 

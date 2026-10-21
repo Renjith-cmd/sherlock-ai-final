@@ -25,9 +25,25 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from src.main import app
 from src.core.database import DatabaseRepository, get_connection
+from src.core.database import PostgresConnection
 from src.core.auth_security import hash_password, verify_password
 
 client = TestClient(app)
+
+
+def test_postgres_connection_translates_sqlite_placeholders():
+    class FakeConnection:
+        def execute(self, query, parameters):
+            self.query = query
+            self.parameters = parameters
+            return self
+
+    raw = FakeConnection()
+    connection = PostgresConnection(raw)
+    connection.execute("SELECT * FROM users WHERE id = ? AND email = ?", ("u1", "a@example.com"))
+
+    assert raw.query == "SELECT * FROM users WHERE id = %s AND email = %s"
+    assert raw.parameters == ("u1", "a@example.com")
 
 
 @pytest.fixture(autouse=True)
