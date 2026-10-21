@@ -122,16 +122,23 @@ export const App: React.FC = () => {
     fetch(`http://127.0.0.1:8080/api/investigations/${invId}/intelligence`)
       .then((r) => r.json())
       .then((data) => {
-        setIntelData(data);
-        if (data.canonical_entities) {
-          // Pre-select all entities by default
-          setSelectedEntityIndices(data.canonical_entities.map((_: any, idx: number) => idx));
-        }
-        if (data.relationships) {
-          setSelectedRelIndices(data.relationships.map((_: any, idx: number) => idx));
-        }
+        const canonical = Array.isArray(data.entities) ? data.entities : (Array.isArray(data.canonical_entities) ? data.canonical_entities : []);
+        const rels = Array.isArray(data.relationships) ? data.relationships : [];
+        const matches = Array.isArray(data.matches) ? data.matches : (Array.isArray(data.match_candidates) ? data.match_candidates : []);
+
+        setIntelData({
+          canonical_entities: canonical,
+          relationships: rels,
+          match_candidates: matches,
+        });
+
+        setSelectedEntityIndices(canonical.map((_: any, idx: number) => idx));
+        setSelectedRelIndices(rels.map((_: any, idx: number) => idx));
       })
-      .catch(console.error);
+      .catch((err) => {
+        console.error("Failed to load intelligence:", err);
+        setIntelData({ canonical_entities: [], match_candidates: [], relationships: [] });
+      });
   };
 
   useEffect(() => {
@@ -304,6 +311,14 @@ export const App: React.FC = () => {
         {
           selector: "node[type = 'file_hash']",
           style: { "border-color": "#64748b", "background-color": "#334155" },
+        },
+        {
+          selector: "node[type = 'document']",
+          style: { "border-color": "#06b6d4", "background-color": "#164e63" },
+        },
+        {
+          selector: "node[type = 'url']",
+          style: { "border-color": "#8b5cf6", "background-color": "#4c1d95" },
         },
         {
           selector: "node:selected",
@@ -1306,8 +1321,35 @@ export const App: React.FC = () => {
                               />
                               <div>
                                 <span style={{ fontWeight: 600, fontSize: "13px" }}>{rel.source_label}</span>
-                                <span style={{ margin: "0 6px", color: "#38bdf8", fontSize: "11px" }}>[{rel.relationship_type}]</span>
+                                <span style={{ margin: "0 6px", color: "#38bdf8", fontSize: "11px", fontWeight: 700 }}>
+                                  [{rel.relationship_type || rel.type}]
+                                </span>
                                 <span style={{ fontWeight: 600, fontSize: "13px" }}>{rel.target_label}</span>
+                                {rel.category && (
+                                  <span
+                                    style={{
+                                      marginLeft: "8px",
+                                      fontSize: "10px",
+                                      padding: "1px 6px",
+                                      borderRadius: "3px",
+                                      background:
+                                        rel.category === "explicit_relationship"
+                                          ? "#065f46"
+                                          : rel.category === "rule_derived"
+                                          ? "#1e3a8a"
+                                          : "#374151",
+                                      color:
+                                        rel.category === "explicit_relationship"
+                                          ? "#6ee7b7"
+                                          : rel.category === "rule_derived"
+                                          ? "#93c5fd"
+                                          : "#9ca3af",
+                                      textTransform: "uppercase",
+                                    }}
+                                  >
+                                    {rel.category.replace("_", " ")}
+                                  </span>
+                                )}
                                 <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
                                   Excerpt: "{rel.evidence_excerpt}"
                                 </div>

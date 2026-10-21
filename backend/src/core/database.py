@@ -523,6 +523,7 @@ class DatabaseRepository:
         intel_id = str(uuid.uuid4())
         conn = get_connection(self.db_file)
         with conn:
+            conn.execute("DELETE FROM extracted_intelligence WHERE document_id = ?", (doc_id,))
             conn.execute(
                 "INSERT INTO extracted_intelligence (id, investigation_id, document_id, extracted_entities, extracted_relationships, cross_document_matches, status, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
