@@ -259,6 +259,7 @@ def duplicate_investigation(
 def get_investigation_graph(inv: Investigation = Depends(get_owned_investigation)):
     entities = repo.get_entities_for_investigation(inv.id)
     relationships = repo.get_relationships_for_investigation(inv.id)
+    from src.core.entity_resolution import EntityResolutionEngine
 
     nodes = [
         {
@@ -282,7 +283,26 @@ def get_investigation_graph(inv: Investigation = Depends(get_owned_investigation
         for r in relationships
     ]
 
-    return {"nodes": nodes, "edges": edges}
+    match_entities = [
+        {
+            "id": entity.id,
+            "label": entity.label,
+            "type": entity.type.value if hasattr(entity.type, "value") else str(entity.type),
+        }
+        for entity in entities
+    ]
+    matches = EntityResolutionEngine.match_entities_across_documents(match_entities)
+    confirmed_match_pairs = {
+        frozenset((relationship.source_id, relationship.target_id))
+        for relationship in relationships
+        if relationship.type == "MATCHES"
+    }
+    matches = [
+        match for match in matches
+        if frozenset((match["entity_a"]["id"], match["entity_b"]["id"])) not in confirmed_match_pairs
+    ]
+
+    return {"nodes": nodes, "edges": edges, "matches": matches}
 
 
 @router.get("/investigations/{inv_id}/export/json")
@@ -312,6 +332,19 @@ def export_investigation_report(inv: Investigation = Depends(get_owned_investiga
     relationships = repo.get_relationships_for_investigation(inv.id)
     report_md = ExportService.generate_investigation_report(inv, entities, relationships)
     return PlainTextResponse(content=report_md, media_type="text/markdown")
+
+
+@router.get("/investigations/{inv_id}/report/pdf")
+def export_investigation_report_pdf(inv: Investigation = Depends(get_owned_investigation)):
+    entities = repo.get_entities_for_investigation(inv.id)
+    relationships = repo.get_relationships_for_investigation(inv.id)
+    report_pdf = ExportService.generate_investigation_report_pdf(inv, entities, relationships)
+    filename = "".join(char if char.isalnum() or char in "-_" else "-" for char in inv.title).strip("-") or "investigation-report"
+    return Response(
+        content=report_pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.pdf"'},
+    )
 
 
 @router.get("/investigations/{inv_id}/analytics")

@@ -51,3 +51,59 @@ def test_entity_update_and_delete_lifecycle():
     assert len(graph["nodes"]) == 1
     assert graph["nodes"][0]["id"] == node_b["id"]
     assert len(graph["edges"]) == 0
+
+
+def test_graph_includes_entity_match_candidates():
+    inv_res = client.post("/api/investigations", json={"title": "Graph Match Test"})
+    assert inv_res.status_code == 200
+    inv_id = inv_res.json()["id"]
+
+    first = client.post(
+        f"/api/investigations/{inv_id}/entities",
+        json={"type": "organization", "label": "Acme Corporation"},
+    ).json()
+    second = client.post(
+        f"/api/investigations/{inv_id}/entities",
+        json={"type": "organization", "label": "Acme Corp"},
+    ).json()
+    third = client.post(
+        f"/api/investigations/{inv_id}/entities",
+        json={"type": "email", "label": "analyst@example.com"},
+    ).json()
+    fourth = client.post(
+        f"/api/investigations/{inv_id}/entities",
+        json={"type": "email", "label": "analyst@example.com"},
+    ).json()
+
+    graph = client.get(f"/api/investigations/{inv_id}/graph")
+    assert graph.status_code == 200
+    matches = graph.json()["matches"]
+    assert any(
+        {match["entity_a"]["id"], match["entity_b"]["id"]} == {first["id"], second["id"]}
+        for match in matches
+    )
+    assert any(
+        {match["entity_a"]["id"], match["entity_b"]["id"]} == {third["id"], fourth["id"]}
+        for match in matches
+    )
+
+    confirmed = client.post(
+        f"/api/investigations/{inv_id}/relationships",
+        json={"source_id": first["id"], "target_id": second["id"], "type": "MATCHES"},
+    )
+    assert confirmed.status_code == 200
+
+    refreshed_graph = client.get(f"/api/investigations/{inv_id}/graph").json()
+    assert any(
+        {match["entity_a"]["id"], match["entity_b"]["id"]} == {third["id"], fourth["id"]}
+        for match in refreshed_graph["matches"]
+    )
+    confirmed_exact = client.post(
+        f"/api/investigations/{inv_id}/relationships",
+        json={"source_id": third["id"], "target_id": fourth["id"], "type": "MATCHES"},
+    )
+    assert confirmed_exact.status_code == 200
+
+    refreshed_graph = client.get(f"/api/investigations/{inv_id}/graph").json()
+    assert refreshed_graph["matches"] == []
+    assert sum(edge["label"] == "MATCHES" for edge in refreshed_graph["edges"]) == 2

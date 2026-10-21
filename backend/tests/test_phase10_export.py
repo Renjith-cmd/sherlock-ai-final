@@ -48,3 +48,10 @@ def test_export_and_report_generation():
     assert "Total Discovered Entities**: 2" in report_text
     assert "`c2-domain.com`" in report_text
     assert "**RESOLVES_TO**" in report_text
+
+    # 7. Test authenticated PDF report download
+    pdf_res = client.get(f"/api/investigations/{inv_id}/report/pdf")
+    assert pdf_res.status_code == 200
+    assert pdf_res.headers["content-type"].startswith("application/pdf")
+    assert "attachment; filename=" in pdf_res.headers["content-disposition"]
+    assert pdf_res.content.startswith(b"%PDF-")

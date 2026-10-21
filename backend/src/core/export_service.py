@@ -3,11 +3,58 @@
 import csv
 import io
 import json
+import re
+from html import escape
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.enums import TA_CENTER
 from typing import Dict, Any, List
 from src.core.models import Investigation, Entity, Relationship
 
 
 class ExportService:
+    @staticmethod
+    def generate_investigation_report_pdf(investigation: Investigation, entities: List[Entity], relationships: List[Relationship]) -> bytes:
+        """Render the investigation report as a downloadable PDF document."""
+        markdown = ExportService.generate_investigation_report(investigation, entities, relationships)
+        buffer = io.BytesIO()
+        document = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,
+            rightMargin=0.7 * inch,
+            leftMargin=0.7 * inch,
+            topMargin=0.65 * inch,
+            bottomMargin=0.65 * inch,
+            title=f"Sherlock AI Report - {investigation.title}",
+            author="Sherlock AI",
+        )
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle("ReportTitle", parent=styles["Title"], alignment=TA_CENTER, textColor="#17324d")
+        body_style = ParagraphStyle("ReportBody", parent=styles["BodyText"], leading=14, spaceAfter=5)
+        story = []
+        for line in markdown.splitlines():
+            line = line.strip()
+            if not line or line == "---" or line.startswith("| :"):
+                story.append(Spacer(1, 5))
+                continue
+            line = re.sub(r"`([^`]*)`", r"\1", line)
+            line = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
+            line = line.replace("|", "  |  ")
+            safe_line = escape(line.encode("latin-1", "replace").decode("latin-1"))
+            if line.startswith("# "):
+                story.append(Paragraph(safe_line[2:], title_style))
+                story.append(Spacer(1, 12))
+            elif line.startswith("## "):
+                story.append(Paragraph(f"<b>{safe_line[3:]}</b>", styles["Heading2"]))
+            elif line.startswith("### "):
+                story.append(Paragraph(f"<b>{safe_line[4:]}</b>", styles["Heading3"]))
+            else:
+                story.append(Paragraph(safe_line, body_style))
+        document.build(story)
+        return buffer.getvalue()
+
     @staticmethod
     def export_graph_json(investigation: Investigation, entities: List[Entity], relationships: List[Relationship]) -> Dict[str, Any]:
         """Produce portable, validated JSON graph bundle."""

@@ -36,7 +36,8 @@ import {
   LogOut,
   Shield,
   Lock,
-  UserPlus
+  UserPlus,
+  Bookmark
 } from "lucide-react";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8080").replace(/\/$/, "");
@@ -61,6 +62,23 @@ interface Relationship {
   source_id: string;
   target_id: string;
   type: string;
+}
+
+interface GraphMatch {
+  entity_a: { id: string; label: string; type: string };
+  entity_b: { id: string; label: string; type: string };
+  score: number;
+  suggestion: string;
+  evidence: string;
+}
+
+interface InputDialogState {
+  title: string;
+  initialValue: string;
+  placeholder: string;
+  secondaryPlaceholder?: string;
+  submitLabel: string;
+  onSubmit: (value: string) => Promise<void>;
 }
 
 interface TransformMeta {
@@ -206,7 +224,15 @@ export const App: React.FC = () => {
   const [investigationId, setInvestigationId] = useState<string>("");
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [showCaseModal, setShowCaseModal] = useState(false);
+  const [inputDialog, setInputDialog] = useState<InputDialogState | null>(null);
+  const [inputDialogValue, setInputDialogValue] = useState("");
+  const [inputDialogError, setInputDialogError] = useState("");
+  const [inputDialogBusy, setInputDialogBusy] = useState(false);
+  const [inputDialogSecondary, setInputDialogSecondary] = useState("");
+  const [showReportDialog, setShowReportDialog] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
+  const [graphMatches, setGraphMatches] = useState<GraphMatch[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [selectedNodeCount, setSelectedNodeCount] = useState<number>(0);
   const [transforms, setTransforms] = useState<TransformMeta[]>([]);
@@ -347,6 +373,33 @@ export const App: React.FC = () => {
       });
   };
 
+  const downloadInvestigationReport = async () => {
+    if (!investigationId) return;
+    setReportBusy(true);
+    try {
+      const response = await authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/report/pdf`);
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(formatAuthError(error, "Could not generate the PDF report."));
+      }
+      const reportBlob = await response.blob();
+      const downloadUrl = URL.createObjectURL(reportBlob);
+      const link = document.createElement("a");
+      const caseTitle = investigations.find((item) => item.id === investigationId)?.title || "sherlock-ai-report";
+      link.href = downloadUrl;
+      link.download = `${caseTitle}.pdf`.replace(/[^a-z0-9._-]+/gi, "-");
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(downloadUrl);
+      setShowReportDialog(false);
+    } catch (error) {
+      setInputDialogError(error instanceof Error ? error.message : "Could not download report.");
+    } finally {
+      setReportBusy(false);
+    }
+  };
+
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -360,6 +413,19 @@ export const App: React.FC = () => {
   const cyRef = useRef<HTMLDivElement>(null);
   const cyInstance = useRef<Core | null>(null);
 
+  const resetCaseView = (nextInvestigationId: string) => {
+    setDocuments([]);
+    setIntelData({ canonical_entities: [], match_candidates: [], relationships: [] });
+    setSelectedEntityIndices([]);
+    setSelectedRelIndices([]);
+    setSelectedDocText(null);
+    setGraphMatches([]);
+    setSelectedEntity(null);
+    setSelectedEdgeId(null);
+    cyInstance.current?.elements().remove();
+    setInvestigationId(nextInvestigationId);
+  };
+
   // Load investigations list
   const refreshInvestigations = (selectId?: string) => {
     if (!authToken) return;
@@ -369,9 +435,9 @@ export const App: React.FC = () => {
         const list = Array.isArray(data) ? data : [];
         setInvestigations(list);
         if (selectId) {
-          setInvestigationId(selectId);
+          resetCaseView(selectId);
         } else if (list.length > 0 && !investigationId) {
-          setInvestigationId(list[0].id);
+          resetCaseView(list[0].id);
         }
       })
       .catch((err) => console.error("Error loading investigations:", err));
@@ -416,7 +482,13 @@ export const App: React.FC = () => {
             "font-size": "11px",
             "font-weight": 600,
             "text-valign": "bottom",
-            "text-margin-y": 6,
+            "text-margin-y": 8,
+            "text-wrap": "wrap",
+            "text-max-width": "120px",
+            "text-overflow-wrap": "anywhere",
+            "text-outline-color": "#07111f",
+            "text-outline-width": 2,
+            "text-outline-opacity": 1,
             width: 40,
             height: 40,
             "overlay-padding": 4,
@@ -477,7 +549,7 @@ export const App: React.FC = () => {
             "target-arrow-color": "#475569",
             "target-arrow-shape": "triangle",
             "curve-style": "bezier",
-            label: "data(label)",
+            label: "",
             color: "#94a3b8",
             "font-size": "9px",
             "text-rotation": "autorotate",
@@ -489,11 +561,37 @@ export const App: React.FC = () => {
         {
           selector: "edge:selected",
           style: {
+            label: "data(label)",
             width: 4,
             "line-color": "#38bdf8",
             "target-arrow-color": "#38bdf8",
             color: "#38bdf8",
           },
+        },
+        {
+          selector: "edge.match-edge",
+          style: {
+            display: "none",
+            width: 2,
+            "line-color": "#f59e0b",
+            "line-style": "dashed",
+            "target-arrow-shape": "none",
+            label: "data(label)",
+            color: "#fbbf24",
+            "font-size": "10px",
+            "font-weight": 700,
+            "text-background-opacity": 0.95,
+            "text-background-color": "#17130a",
+            "text-background-padding": "3px",
+            "curve-style": "unbundled-bezier",
+            "control-point-distances": 54,
+            "control-point-weights": 0.5,
+            events: "no",
+          },
+        },
+        {
+          selector: "edge.match-edge.match-visible",
+          style: { display: "element" },
         },
       ],
       layout: { name: "cose", animate: false },
@@ -507,8 +605,13 @@ export const App: React.FC = () => {
       setSelectedNodeCount(selected.length);
       if (selected.length === 1) {
         setSelectedEntity(evt.target.data("entity"));
+        cy.edges(".match-edge").removeClass("match-visible");
+        cy.edges(".match-edge").filter((edge) =>
+          edge.data("source") === evt.target.id() || edge.data("target") === evt.target.id()
+        ).addClass("match-visible");
       } else {
         setSelectedEntity(null);
+        cy.edges(".match-edge").removeClass("match-visible");
       }
       setSelectedEdgeId(null);
     });
@@ -520,6 +623,7 @@ export const App: React.FC = () => {
         setSelectedEntity(selected[0].data("entity"));
       } else {
         setSelectedEntity(null);
+        cy.edges(".match-edge").removeClass("match-visible");
       }
     });
 
@@ -574,6 +678,8 @@ export const App: React.FC = () => {
 
         const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
         const edges = Array.isArray(data?.edges) ? data.edges : [];
+        const matches: GraphMatch[] = Array.isArray(data?.matches) ? data.matches : [];
+        setGraphMatches(matches);
 
         nodes.forEach((n: Entity) => {
           cy.add({
@@ -585,7 +691,28 @@ export const App: React.FC = () => {
         edges.forEach((e: Relationship) => {
           cy.add({
             group: "edges",
-            data: { id: e.id, source: e.source_id, target: e.target_id, label: e.type },
+            data: {
+              id: e.id,
+              source: (e as any).source ?? e.source_id,
+              target: (e as any).target ?? e.target_id,
+              label: (e as any).label ?? e.type,
+            },
+          });
+        });
+
+        matches.forEach((match) => {
+          const source = match.entity_a?.id;
+          const target = match.entity_b?.id;
+          if (!source || !target) return;
+          cy.add({
+            group: "edges",
+            classes: "match-edge",
+            data: {
+              id: `match-${[source, target].sort().join("-")}`,
+              source,
+              target,
+              label: `POSSIBLE MATCH ${Math.round(match.score * 100)}%`,
+            },
           });
         });
 
@@ -594,6 +721,32 @@ export const App: React.FC = () => {
         }
       })
       .catch((err) => console.error("Error loading graph:", err));
+  };
+
+  const handleConfirmGraphMatch = (match: GraphMatch) => {
+    if (!investigationId) return;
+    authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/relationships`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source_id: match.entity_a.id,
+        target_id: match.entity_b.id,
+        type: "MATCHES",
+        properties: { match_score: match.score, suggestion: match.suggestion },
+        provenance: {
+          source: "analyst_review",
+          method: "entity_resolution_confirmation",
+          confidence: match.score,
+          details: { evidence: match.evidence },
+        },
+      }),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("Could not confirm entity match.");
+        return response.json();
+      })
+      .then(() => loadGraph(investigationId))
+      .catch(console.error);
   };
 
   const applyLayout = (name: string) => {
@@ -672,10 +825,7 @@ export const App: React.FC = () => {
     layout.one("layoutstop", () => {
       // Clamp zoom to comfortable viewing range: between 0.65 and 1.3
       const currentZ = cy.zoom();
-      if (currentZ < 0.65) {
-        cy.zoom(0.65);
-        cy.center();
-      } else if (currentZ > 1.3) {
+      if (currentZ > 1.3) {
         cy.zoom(1.1);
         cy.center();
       }
@@ -717,58 +867,75 @@ export const App: React.FC = () => {
 
   // Add Entity manually
   const handleAddEntity = (type: string, defaultLabel: string) => {
-    const label = window.prompt(`Enter ${type} value:`, defaultLabel);
-    if (!label || !investigationId) return;
-
-    authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/entities`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type, label, properties: {} }),
-    })
-      .then((res) => res.json())
-      .then((newEntity) => {
-        const cy = cyInstance.current;
-        if (cy) {
-          cy.add({
-            group: "nodes",
-            data: { id: newEntity.id, label: newEntity.label, type: newEntity.type, entity: newEntity },
-          });
-          applyLayout(currentLayout);
-        }
-      });
+    if (!investigationId) return;
+    setInputDialogError("");
+    setInputDialogValue(defaultLabel);
+    setInputDialog({
+      title: `Add ${type} entity`,
+      initialValue: defaultLabel,
+      placeholder: `Enter ${type} value`,
+      submitLabel: "Add entity",
+      onSubmit: async (label) => {
+        const response = await authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/entities`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type, label, properties: {} }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(formatAuthError(result, "Could not add entity."));
+        loadGraph(investigationId);
+        setInputDialog(null);
+      },
+    });
   };
 
   // Investigation Management Actions
   const handleCreateInvestigation = () => {
-    const title = window.prompt("New Investigation Title:", "Operation New Horizon");
-    if (!title) return;
-    authFetch("http://127.0.0.1:8080/api/investigations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, description: "Active OSINT Workspace" }),
-    })
-      .then((r) => r.json())
-      .then((newInv) => {
-        refreshInvestigations(newInv.id);
+    setInputDialogError("");
+    setInputDialogValue("");
+    setInputDialog({
+      title: "Create new case",
+      initialValue: "",
+      placeholder: "Case name",
+      submitLabel: "Create case",
+      onSubmit: async (title) => {
+        const response = await authFetch("http://127.0.0.1:8080/api/investigations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, description: "Active Sherlock AI workspace" }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(formatAuthError(result, "Could not create case."));
+        resetCaseView(result.id);
+        setInvestigations((current) => [result, ...current]);
         setShowCaseModal(false);
-      });
+        setInputDialog(null);
+      },
+    });
   };
 
   const handleDuplicateInvestigation = (idToDup: string) => {
     const target = investigations.find((i) => i.id === idToDup);
-    const newTitle = window.prompt("Duplicate Investigation As:", target ? `${target.title} (Clone)` : "Investigation Copy");
-    if (!newTitle) return;
-
-    authFetch(`http://127.0.0.1:8080/api/investigations/${idToDup}/duplicate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: newTitle }),
-    })
-      .then((r) => r.json())
-      .then((cloned) => {
-        refreshInvestigations(cloned.id);
+    setInputDialogError("");
+    setInputDialogValue(target ? `${target.title} (Clone)` : "Investigation Copy");
+    setInputDialog({
+      title: "Duplicate case",
+      initialValue: target ? `${target.title} (Clone)` : "Investigation Copy",
+      placeholder: "Case name",
+      submitLabel: "Duplicate case",
+      onSubmit: async (title) => {
+        const response = await authFetch(`http://127.0.0.1:8080/api/investigations/${idToDup}/duplicate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(formatAuthError(result, "Could not duplicate case."));
+        refreshInvestigations(result.id);
         setShowCaseModal(false);
-      });
+        setInputDialog(null);
+      },
+    });
   };
 
   const handleDeleteInvestigation = (idToDel: string) => {
@@ -778,9 +945,7 @@ export const App: React.FC = () => {
       .then(() => {
         const remaining = investigations.filter((i) => i.id !== idToDel);
         setInvestigations(remaining);
-        if (remaining.length > 0) {
-          setInvestigationId(remaining[0].id);
-        }
+        resetCaseView(remaining[0]?.id || "");
       });
   };
 
@@ -809,16 +974,21 @@ export const App: React.FC = () => {
 
   // Rename Entity
   const handleRenameEntity = (entity: Entity) => {
-    const newLabel = window.prompt("Edit entity label:", entity.label);
-    if (!newLabel || newLabel === entity.label) return;
-
-    authFetch(`http://127.0.0.1:8080/api/entities/${entity.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: newLabel }),
-    })
-      .then((r) => r.json())
-      .then((updated) => {
+    setInputDialogError("");
+    setInputDialogValue(entity.label);
+    setInputDialog({
+      title: "Rename entity",
+      initialValue: entity.label,
+      placeholder: "Entity label",
+      submitLabel: "Save name",
+      onSubmit: async (newLabel) => {
+        const response = await authFetch(`http://127.0.0.1:8080/api/entities/${entity.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label: newLabel }),
+        });
+        const updated = await response.json();
+        if (!response.ok) throw new Error(formatAuthError(updated, "Could not rename entity."));
         const node = cyInstance.current?.$(`#${entity.id}`);
         if (node) {
           node.data("label", updated.label);
@@ -826,7 +996,9 @@ export const App: React.FC = () => {
         }
         setSelectedEntity(updated);
         setContextMenu(null);
-      });
+        setInputDialog(null);
+      },
+    });
   };
 
   // Link Mode Handler
@@ -841,25 +1013,29 @@ export const App: React.FC = () => {
       return;
     }
 
-    const relType = window.prompt("Enter relationship label:", "CONNECTED_TO") || "CONNECTED_TO";
-
-    authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/relationships`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source_id: linkSourceNodeId,
-        target_id: targetId,
-        type: relType,
-      }),
-    })
-      .then((r) => r.json())
-      .then((rel) => {
+    setInputDialogValue("CONNECTED_TO");
+    setInputDialogError("");
+    setInputDialog({
+      title: "Create relationship",
+      initialValue: "CONNECTED_TO",
+      placeholder: "Relationship label",
+      submitLabel: "Connect entities",
+      onSubmit: async (relType) => {
+        const response = await authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/relationships`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source_id: linkSourceNodeId, target_id: targetId, type: relType }),
+        });
+        const rel = await response.json();
+        if (!response.ok) throw new Error(formatAuthError(rel, "Could not connect entities."));
         cyInstance.current?.add({
           group: "edges",
           data: { id: rel.id, source: rel.source_id, target: rel.target_id, label: rel.type },
         });
         setLinkSourceNodeId(null);
-      });
+        setInputDialog(null);
+      },
+    });
   };
 
   // Run Transform
@@ -899,6 +1075,9 @@ export const App: React.FC = () => {
   };
 
   const activeInv = Array.isArray(investigations) ? investigations.find((i) => i.id === investigationId) : undefined;
+  const selectedGraphMatches = selectedEntity
+    ? graphMatches.filter((match) => match.entity_a.id === selectedEntity.id || match.entity_b.id === selectedEntity.id)
+    : [];
 
   // ─── AUTH GATE: Show Login/Register if not authenticated ────────────
   if (!authToken || !currentUser) {
@@ -1236,7 +1415,8 @@ export const App: React.FC = () => {
             title="Generate Forensic Report"
             onClick={() => {
               if (investigationId) {
-                window.open(apiUrl(`http://127.0.0.1:8080/api/investigations/${investigationId}/report`), "_blank");
+                setInputDialogError("");
+                setShowReportDialog(true);
               }
             }}
           >
@@ -1357,7 +1537,7 @@ export const App: React.FC = () => {
                         className="tool-btn"
                         style={{ background: "#2563eb", color: "#fff" }}
                         onClick={() => {
-                          setInvestigationId(inv.id);
+                          resetCaseView(inv.id);
                           setShowCaseModal(false);
                         }}
                       >
@@ -2172,6 +2352,47 @@ export const App: React.FC = () => {
             }}
           />
 
+          {selectedEntity && (
+            <section className="entity-bookmark-popover" aria-label="Selected entity details">
+              <div className="entity-bookmark-header">
+                <Bookmark size={15} aria-hidden="true" />
+                <span>ENTITY CARD</span>
+                <button
+                  type="button"
+                  className="entity-bookmark-close"
+                  aria-label="Close entity card"
+                  onClick={() => cyInstance.current?.nodes(":selected").unselect()}
+                >
+                  <XCircle size={16} />
+                </button>
+              </div>
+              <div className="entity-bookmark-name">{selectedEntity.label}</div>
+              <div className="entity-bookmark-type">{selectedEntity.type.replaceAll("_", " ")}</div>
+              {selectedGraphMatches.length > 0 ? (
+                <div className="entity-match-list">
+                  <div className="entity-match-heading">Suggested matches</div>
+                  {selectedGraphMatches.slice(0, 4).map((match) => {
+                    const peer = match.entity_a.id === selectedEntity.id ? match.entity_b : match.entity_a;
+                    return (
+                      <div className="entity-match-item" key={`${match.entity_a.id}:${match.entity_b.id}`}>
+                        <div className="entity-match-copy">
+                          <strong>{peer.label}</strong>
+                          <span>{Math.round(match.score * 100)}% · {match.suggestion.replaceAll("_", " ")}</span>
+                        </div>
+                        <button type="button" className="entity-match-confirm" onClick={() => handleConfirmGraphMatch(match)}>
+                          Confirm match
+                        </button>
+                      </div>
+                    );
+                  })}
+                  <p className="entity-match-note">Dashed links are suggestions; confirmation adds a reviewed graph relationship.</p>
+                </div>
+              ) : (
+                <div className="entity-match-empty">No suggested matches for this entity.</div>
+              )}
+            </section>
+          )}
+
           {/* Empty Case or No Active Case Guidance Overlay */}
           {!investigationId ? (
             <div style={{
@@ -2348,16 +2569,26 @@ export const App: React.FC = () => {
                     className="tool-btn"
                     style={{ background: "#1e293b", border: "1px solid #2a3749", padding: "2px 6px", fontSize: "11px" }}
                     onClick={() => {
-                      const sourceId = window.prompt("Source identifier (e.g. CERT Advisory, Log entry):", "Analyst Note");
-                      if (!sourceId) return;
-                      const notes = window.prompt("Notes or evidence quote:", "Verified by human analyst");
-                      authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/entities/${selectedEntity.id}/evidence`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ source_identifier: sourceId, user_notes: notes }),
-                      })
-                        .then((r) => r.json())
-                        .then(() => alert("Evidence attached to entity successfully."));
+                      setInputDialogValue("Analyst Note");
+                      setInputDialogSecondary("");
+                      setInputDialogError("");
+                      setInputDialog({
+                        title: "Attach evidence",
+                        initialValue: "Analyst Note",
+                        placeholder: "Source identifier",
+                        secondaryPlaceholder: "Notes or evidence quote",
+                        submitLabel: "Attach evidence",
+                        onSubmit: async (sourceId) => {
+                          const response = await authFetch(`http://127.0.0.1:8080/api/investigations/${investigationId}/entities/${selectedEntity.id}/evidence`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ source_identifier: sourceId, user_notes: inputDialogSecondary }),
+                          });
+                          const result = await response.json();
+                          if (!response.ok) throw new Error(formatAuthError(result, "Could not attach evidence."));
+                          setInputDialog(null);
+                        },
+                      });
                     }}
                   >
                     + Attach
@@ -2393,6 +2624,77 @@ export const App: React.FC = () => {
           )}
         </aside>
       </div>
+
+      {inputDialog && (
+        <div className="workflow-modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !inputDialogBusy) setInputDialog(null);
+        }}>
+          <form
+            className="workflow-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="workflow-dialog-title"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const value = inputDialogValue.trim();
+              if (!value) {
+                setInputDialogError("Enter a value to continue.");
+                return;
+              }
+              setInputDialogBusy(true);
+              setInputDialogError("");
+              try {
+                await inputDialog.onSubmit(value);
+              } catch (error) {
+                setInputDialogError(error instanceof Error ? error.message : "The request failed.");
+              } finally {
+                setInputDialogBusy(false);
+              }
+            }}
+          >
+            <h2 id="workflow-dialog-title">{inputDialog.title}</h2>
+            <input
+              autoFocus
+              value={inputDialogValue}
+              placeholder={inputDialog.placeholder}
+              onChange={(event) => setInputDialogValue(event.target.value)}
+            />
+            {inputDialog.secondaryPlaceholder && (
+              <textarea
+                value={inputDialogSecondary}
+                placeholder={inputDialog.secondaryPlaceholder}
+                onChange={(event) => setInputDialogSecondary(event.target.value)}
+              />
+            )}
+            {inputDialogError && <p className="workflow-modal-error">{inputDialogError}</p>}
+            <div className="workflow-modal-actions">
+              <button type="button" className="workflow-secondary-button" onClick={() => setInputDialog(null)} disabled={inputDialogBusy}>Cancel</button>
+              <button type="submit" className="workflow-primary-button" disabled={inputDialogBusy}>
+                {inputDialogBusy ? "Working..." : inputDialog.submitLabel}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showReportDialog && (
+        <div className="workflow-modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !reportBusy) setShowReportDialog(false);
+        }}>
+          <section className="workflow-modal report-download-modal" role="dialog" aria-modal="true" aria-labelledby="report-dialog-title">
+            <div className="report-modal-icon"><FileText size={20} /></div>
+            <h2 id="report-dialog-title">Download case report</h2>
+            <p>Generate a PDF report for <strong>{investigations.find((item) => item.id === investigationId)?.title || "this case"}</strong>.</p>
+            {inputDialogError && <p className="workflow-modal-error">{inputDialogError}</p>}
+            <div className="workflow-modal-actions">
+              <button type="button" className="workflow-secondary-button" onClick={() => setShowReportDialog(false)} disabled={reportBusy}>Cancel</button>
+              <button type="button" className="workflow-primary-button" onClick={downloadInvestigationReport} disabled={reportBusy}>
+                <Download size={15} /> {reportBusy ? "Preparing PDF..." : "Download PDF"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 };

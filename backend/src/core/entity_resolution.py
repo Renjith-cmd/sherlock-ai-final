@@ -357,7 +357,8 @@ class EntityResolutionEngine:
 
                     e1, e2 = entities[i], entities[j]
                     # Only compare entities from DIFFERENT documents or distinct entities
-                    if e1.get("source_doc_id") == e2.get("source_doc_id") and e1["label"].lower() == e2["label"].lower():
+                    source_doc_id = e1.get("source_doc_id")
+                    if source_doc_id and source_doc_id == e2.get("source_doc_id") and e1["label"].lower() == e2["label"].lower():
                         continue
 
                     comparison = cls.compare_entities(e1, e2)
