@@ -62,6 +62,17 @@ interface Relationship {
   source_id: string;
   target_id: string;
   type: string;
+  properties?: Record<string, any>;
+  provenance?: { source?: string; method?: string; confidence?: number; details?: Record<string, any> };
+}
+
+interface GraphConnection {
+  id: string;
+  type: string;
+  sourceLabel: string;
+  targetLabel: string;
+  properties: Record<string, any>;
+  provenance: { source?: string; method?: string; confidence?: number; details?: Record<string, any> };
 }
 
 interface GraphMatch {
@@ -234,6 +245,8 @@ export const App: React.FC = () => {
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
   const [graphMatches, setGraphMatches] = useState<GraphMatch[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedConnection, setSelectedConnection] = useState<GraphConnection | null>(null);
+  const [showAllConnections, setShowAllConnections] = useState(false);
   const [selectedNodeCount, setSelectedNodeCount] = useState<number>(0);
   const [transforms, setTransforms] = useState<TransformMeta[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -412,6 +425,7 @@ export const App: React.FC = () => {
 
   const cyRef = useRef<HTMLDivElement>(null);
   const cyInstance = useRef<Core | null>(null);
+  const layoutInstance = useRef<ReturnType<Core["layout"]> | null>(null);
 
   const resetCaseView = (nextInvestigationId: string) => {
     setDocuments([]);
@@ -593,6 +607,10 @@ export const App: React.FC = () => {
           selector: "edge.match-edge.match-visible",
           style: { display: "element" },
         },
+        {
+          selector: "edge.low-signal-hidden",
+          style: { display: "none" },
+        },
       ],
       layout: { name: "cose", animate: false },
     });
@@ -614,6 +632,7 @@ export const App: React.FC = () => {
         cy.edges(".match-edge").removeClass("match-visible");
       }
       setSelectedEdgeId(null);
+      setSelectedConnection(null);
     });
 
     cy.on("unselect", "node", () => {
@@ -628,12 +647,22 @@ export const App: React.FC = () => {
     });
 
     cy.on("select", "edge", (evt: EventObject) => {
-      setSelectedEdgeId(evt.target.id());
+      const edge = evt.target;
+      setSelectedEdgeId(edge.id());
+      setSelectedConnection({
+        id: edge.id(),
+        type: edge.data("label") || edge.data("type") || "ASSOCIATED_WITH",
+        sourceLabel: edge.data("source_label") || edge.data("sourceLabel") || edge.source().data("label") || "Unknown entity",
+        targetLabel: edge.data("target_label") || edge.data("targetLabel") || edge.target().data("label") || "Unknown entity",
+        properties: edge.data("properties") || {},
+        provenance: edge.data("provenance") || {},
+      });
       setSelectedEntity(null);
     });
 
     cy.on("unselect", "edge", () => {
       setSelectedEdgeId(null);
+      setSelectedConnection(null);
     });
 
     // Right-click Context Menu on Nodes
@@ -660,6 +689,9 @@ export const App: React.FC = () => {
 
     return () => {
       if (cyInstance.current) {
+        layoutInstance.current?.stop();
+        layoutInstance.current = null;
+        cyInstance.current.stop(true);
         cyInstance.current.destroy();
         cyInstance.current = null;
       }
@@ -696,7 +728,18 @@ export const App: React.FC = () => {
               source: (e as any).source ?? e.source_id,
               target: (e as any).target ?? e.target_id,
               label: (e as any).label ?? e.type,
+              source_label: (e as any).source_label,
+              target_label: (e as any).target_label,
+              properties: e.properties || (e as any).properties || {},
+              provenance: e.provenance || (e as any).provenance || {},
             },
+            classes: (() => {
+              const provenance = e.provenance || (e as any).provenance || {};
+              const confidence = Number(provenance.confidence ?? 1);
+              const relationshipType = String(e.type || (e as any).label || "").toUpperCase();
+              const lowSignal = relationshipType === "MENTIONS" || provenance.method === "co_occurrence_extraction" || confidence < 0.7;
+              return lowSignal ? `low-signal-edge${showAllConnections ? "" : " low-signal-hidden"}` : "";
+            })(),
           });
         });
 
@@ -753,6 +796,7 @@ export const App: React.FC = () => {
     if (!cyInstance.current) return;
     setCurrentLayout(name);
     const cy = cyInstance.current;
+    layoutInstance.current?.stop();
 
     const totalNodes = cy.nodes().length;
     if (totalNodes === 0) return;
@@ -767,6 +811,7 @@ export const App: React.FC = () => {
         padding: 100,
         fit: false,
       });
+      layoutInstance.current = singleLayout;
       singleLayout.run();
       cy.center();
       cy.zoom(1.0);
@@ -822,7 +867,10 @@ export const App: React.FC = () => {
     }
 
     const layout = cy.layout(layoutOpts);
+    layoutInstance.current = layout;
     layout.one("layoutstop", () => {
+      if (cyInstance.current !== cy || cy.destroyed()) return;
+      if (layoutInstance.current === layout) layoutInstance.current = null;
       // Clamp zoom to comfortable viewing range: between 0.65 and 1.3
       const currentZ = cy.zoom();
       if (currentZ > 1.3) {
@@ -838,6 +886,14 @@ export const App: React.FC = () => {
       loadGraph(investigationId);
     }
   }, [investigationId]);
+
+  useEffect(() => {
+    const cy = cyInstance.current;
+    if (!cy) return;
+    cy.edges(".low-signal-edge").forEach((edge) => {
+      edge.toggleClass("low-signal-hidden", !showAllConnections);
+    });
+  }, [showAllConnections]);
 
   // Search & Type Filtering
   useEffect(() => {
@@ -2222,6 +2278,14 @@ export const App: React.FC = () => {
             <button className="tool-btn" onClick={() => cyInstance.current?.fit(undefined, 30)}>
               <Maximize2 size={14} /> Fit View
             </button>
+            <button
+              className="tool-btn"
+              aria-pressed={showAllConnections}
+              title={showAllConnections ? "Hide inferred and document links" : "Show inferred and document links"}
+              onClick={() => setShowAllConnections((visible) => !visible)}
+            >
+              <Eye size={14} /> {showAllConnections ? "Hide extra links" : "Show all links"}
+            </button>
 
             {/* Layout Algorithms */}
             <div style={{ display: "flex", alignItems: "center", gap: "4px", borderLeft: "1px solid #334155", paddingLeft: "6px" }}>
@@ -2389,6 +2453,34 @@ export const App: React.FC = () => {
                 </div>
               ) : (
                 <div className="entity-match-empty">No suggested matches for this entity.</div>
+              )}
+            </section>
+          )}
+
+          {selectedConnection && (
+            <section className="entity-bookmark-popover connection-bookmark-popover" aria-label="Selected connection details">
+              <div className="entity-bookmark-header">
+                <Bookmark size={15} aria-hidden="true" />
+                <span>CONNECTION CARD</span>
+                <button
+                  type="button"
+                  className="entity-bookmark-close"
+                  aria-label="Close connection card"
+                  onClick={() => cyInstance.current?.$(`#${selectedConnection.id}`).unselect()}
+                >
+                  <XCircle size={16} />
+                </button>
+              </div>
+              <div className="connection-endpoint">{selectedConnection.sourceLabel}</div>
+              <div className="connection-type">{selectedConnection.type.replaceAll("_", " ")}</div>
+              <div className="connection-endpoint">{selectedConnection.targetLabel}</div>
+              <div className="connection-metadata">
+                <span>Source: {selectedConnection.provenance.source || "unknown"}</span>
+                <span>Method: {selectedConnection.provenance.method || "direct"}</span>
+                <span>Confidence: {Math.round((selectedConnection.provenance.confidence ?? 1) * 100)}%</span>
+              </div>
+              {Object.keys(selectedConnection.properties).length > 0 && (
+                <pre className="connection-properties">{JSON.stringify(selectedConnection.properties, null, 2)}</pre>
               )}
             </section>
           )}

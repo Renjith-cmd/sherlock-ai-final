@@ -53,6 +53,29 @@ def test_entity_update_and_delete_lifecycle():
     assert len(graph["edges"]) == 0
 
 
+def test_graph_edges_include_endpoint_names_and_provenance():
+    inv_id = client.post("/api/investigations", json={"title": "Edge Details Test"}).json()["id"]
+    source = client.post(
+        f"/api/investigations/{inv_id}/entities",
+        json={"type": "domain", "label": "source.example.com"},
+    ).json()
+    target = client.post(
+        f"/api/investigations/{inv_id}/entities",
+        json={"type": "ip", "label": "192.0.2.10"},
+    ).json()
+    client.post(
+        f"/api/investigations/{inv_id}/relationships",
+        json={"source_id": source["id"], "target_id": target["id"], "type": "RESOLVES_TO"},
+    )
+
+    graph = client.get(f"/api/investigations/{inv_id}/graph").json()
+    edge = graph["edges"][0]
+    assert edge["source_label"] == source["label"]
+    assert edge["target_label"] == target["label"]
+    assert edge["label"] == "RESOLVES_TO"
+    assert edge["provenance"]["source"] == "manual_link"
+
+
 def test_graph_includes_entity_match_candidates():
     inv_res = client.post("/api/investigations", json={"title": "Graph Match Test"})
     assert inv_res.status_code == 200

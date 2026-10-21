@@ -272,13 +272,17 @@ def get_investigation_graph(inv: Investigation = Depends(get_owned_investigation
         for e in entities
     ]
 
+    entities_by_id = {entity.id: entity for entity in entities}
     edges = [
         {
             "id": r.id,
             "source": r.source_id,
             "target": r.target_id,
+            "source_label": entities_by_id[r.source_id].label if r.source_id in entities_by_id else r.source_id,
+            "target_label": entities_by_id[r.target_id].label if r.target_id in entities_by_id else r.target_id,
             "label": r.type,
-            "properties": r.properties
+            "properties": r.properties,
+            "provenance": r.provenance.model_dump(),
         }
         for r in relationships
     ]
