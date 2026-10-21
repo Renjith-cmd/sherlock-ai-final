@@ -101,6 +101,32 @@ def test_rule_fallback_extracts_narrative_person_location_and_systems_org(monkey
     assert (EntityType.PERSON.value, "Jonathan Vance") in entities
 
 
+def test_rule_fallback_entities_generate_cross_document_matches(monkeypatch):
+    """Fallback-extracted people and organizations should produce match candidates across files."""
+    monkeypatch.setattr("src.core.document_intelligence.get_nlp_model", lambda: None)
+    first = DocumentIntelligenceEngine.extract_all(
+        "Alice Cooper works for Umbrella Corp in Raccoon City.", "doc-match-a"
+    )
+    second = DocumentIntelligenceEngine.extract_all(
+        "Alicia Cooper works at Umbrella Corporation in Raccoon City.", "doc-match-b"
+    )
+
+    entities = first["entities"] + second["entities"]
+    entity_labels = {(entity["type"], entity["label"]) for entity in entities}
+    assert (EntityType.PERSON.value, "Alice Cooper") in entity_labels
+    assert (EntityType.PERSON.value, "Alicia Cooper") in entity_labels
+    assert (EntityType.ORGANIZATION.value, "Umbrella Corp") in entity_labels
+    assert (EntityType.ORGANIZATION.value, "Umbrella Corporation") in entity_labels
+
+    matches = EntityResolutionEngine.match_entities_across_documents(entities)
+    matched_pairs = {
+        frozenset((match["entity_a"]["label"], match["entity_b"]["label"]))
+        for match in matches
+    }
+    assert frozenset(("Alice Cooper", "Alicia Cooper")) in matched_pairs
+    assert frozenset(("Umbrella Corp", "Umbrella Corporation")) in matched_pairs
+
+
 def test_long_document_chunking_and_offsets():
     """Verify document longer than chunk limit processes cleanly without losing entities."""
     long_prefix = "The operational log continues with standard security checks.\n" * 400

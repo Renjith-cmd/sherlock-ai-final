@@ -24,7 +24,9 @@ from src.core.models import EntityType
 # Common corporate suffixes for normalisation
 CORP_LEGAL_SUFFIXES = {
     "corp", "corporation", "inc", "incorporated", "llc", "ltd", "limited",
-    "gmbh", "sa", "ag", "co", "company", "plc", "holdings", "group"
+    "gmbh", "sa", "ag", "co", "company", "plc", "holdings", "group",
+    "systems", "system", "technologies", "technology", "solutions", "laboratories",
+    "foundation", "university", "institute", "bank", "agency", "department", "association",
 }
 
 
@@ -323,18 +325,19 @@ class EntityResolutionEngine:
 
             keys = []
             if e_type == EntityType.PERSON.value:
-                # Soundex of last name and first name
+                # Soundex, token prefixes, and every name token allow common spelling/order variants into the same block.
                 tokens = [p for p in re.findall(r"[A-Za-z]+", label)]
                 if tokens:
-                    keys.append("sx:" + soundex(tokens[-1]))
-                    if len(tokens) > 1:
-                        keys.append("sx:" + soundex(tokens[0]))
+                    for token in tokens:
+                        keys.append("sx:" + soundex(token))
+                        keys.append("prefix:" + token[:3].lower())
                 keys.append("first2:" + label[:2].lower())
             elif e_type == EntityType.ORGANIZATION.value:
                 root, _ = cls.clean_org_name(label)
                 root_tokens = root.split()
-                if root_tokens:
-                    keys.append("orgroot:" + root_tokens[0].lower())
+                for token in root_tokens:
+                    keys.append("orgroot:" + token.lower())
+                    keys.append("orgprefix:" + token[:3].lower())
                 keys.append("first2:" + label[:2].lower())
             else:
                 keys.append("exact:" + label.lower())

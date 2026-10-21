@@ -306,6 +306,36 @@ class DocumentIntelligenceEngine:
                     "method": "contextual_narrative_person"
                 })
 
+        # Named subjects followed by common employment, reporting, or investigation verbs.
+        action_person_pattern = (
+            r"(?<![A-Za-z])([A-Z][a-z]+(?:[-'][A-Z]?[a-z]+)?"
+            r"\s+[A-Z][a-z]+(?:[-'][A-Z]?[a-z]+)?(?:\s+[A-Z][a-z]+)?)"
+            r"\s+(?=(?:works?\s+(?:for|at)|worked\s+(?:for|at)|"
+            r"was\s+(?:identified|interviewed|seen|located|found|reported)|"
+            r"has\s+joined|joined|reported|stated|confirmed|signed|visited|"
+            r"testified|announced|identified|contacted|met|spoke|presented|represented)\b)"
+        )
+        for m in re.finditer(action_person_pattern, chunk_text):
+            name = m.group(1).strip()
+            start, end = m.start(1), m.end(1)
+            overlaps_known_entity = any(
+                cls._spans_overlap(start, end, mention["start_offset"] - offset_delta, mention["end_offset"] - offset_delta)
+                and mention["type"] == EntityType.ORGANIZATION.value
+                for mention in mentions
+            )
+            if overlaps_known_entity or any(cls._spans_overlap(start, end, s, e) for (s, e) in spacy_spans):
+                continue
+            mentions.append({
+                "type": EntityType.PERSON.value,
+                "label": name,
+                "original_text": name,
+                "start_offset": offset_delta + start,
+                "end_offset": offset_delta + end,
+                "context": cls._get_context(chunk_text, start, end),
+                "confidence": 0.82,
+                "method": "contextual_action_person"
+            })
+
         # Place names following common geographic prepositions or movement phrases.
         location_pattern = (
             r"\b(?:in|near|from|within|outside|at|traveled to|travelled to|"
